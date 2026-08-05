@@ -84,3 +84,14 @@ HOWTO_USE.md             # full how-to
 ## Security note
 
 Internal TMONE / Ameyo operations tooling. Do **not** commit `db_config.yaml` with live passwords.
+
+## Offline / no-internet servers
+
+Python packages are **bundled as wheels** for air-gapped install.
+
+1. On a PC with internet + Docker: `.\prepare_usb_bundle.ps1 -PythonVersion 3.9`
+2. Copy ZIP to server USB
+3. On server: `PYTHON3=python3.9 ./install_offline.sh`
+4. See **[OFFLINE_INSTALL.md](OFFLINE_INSTALL.md)** for full steps
+
+This tool needs Python 3.9+; it is not a zero-dependency binary. Dependencies travel with the USB zip.

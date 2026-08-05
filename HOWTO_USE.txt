@@ -1,6 +1,7 @@
 # TMONE License Utilization & Login Count — How To Use
 
 **Project:** license-utilization-automation  
+**Repo:** https://github.com/sagark-commits/License-Automation  
 **Last updated:** 2026-08-05  
 **Server Python:** `python3.9` only (not `python` / `python3`)
 
@@ -19,16 +20,48 @@ Automates the monthly TMONE reports that were previously built by exporting Amey
 
 ---
 
-## 2. Quick start (recommended — DB mode, no UI export)
+## 2. Offline / air-gapped servers (no internet)
+
+Most TMONE servers have **no internet**. This tool needs Python packages (`pandas`, `openpyxl`, `PyYAML`, `psycopg2`), but they are **shipped as wheels** in a USB zip. The server never runs `pip install` from the internet.
+
+### Full guide
+See **OFFLINE_INSTALL.md** / **OFFLINE_INSTALL.txt** for details.
+
+### Build USB zip (PC WITH internet + Docker)
+
+```powershell
+cd license-utilization-automation
+.\prepare_usb_bundle.ps1 -PythonVersion 3.9
+```
+
+Creates: `tmone_offline_bundle_py3.9.zip`
+
+### Install on air-gapped server
+
+```bash
+unzip -o tmone_offline_bundle_py3.9.zip -d /opt/
+cd /opt/offline_bundle
+chmod +x install_offline.sh
+PYTHON3=python3.9 ./install_offline.sh
+```
+
+### Verify
+
+```bash
+cd /opt/offline_bundle/license-utilization-automation
+python3.9 check_env.py
+```
+
+**Note:** Python 3.9+ must already exist on the server (from internal OS packages / ISO). Only the Python *libraries* come from the USB zip.
+
+---
+
+## 3. Quick start (recommended — DB mode, no UI export)
 
 ### One-time setup on server
 
 ```bash
 cd /opt/offline_bundle/license-utilization-automation
-
-# Install wheels (if not done)
-cd /opt/offline_bundle && PYTHON3=python3.9 ./install_offline.sh
-cd license-utilization-automation
 
 # DB credentials
 cp db_config.yaml.example db_config.yaml
@@ -50,12 +83,6 @@ arc_databases:
     login: { host: 10.28.9.103, name: oneproduct }
   ARC-2:
     login: { host: 10.28.9.110, name: oneproduct }
-```
-
-Verify packages:
-
-```bash
-python3.9 -c "import pandas, openpyxl, yaml, psycopg2; print('OK')"
 ```
 
 ### Monthly run (both ARCs + utilization + login)
@@ -80,12 +107,13 @@ output/Tmone--Login Count Tmone_Jul_26.xlsx
 
 ---
 
-## 3. Windows quick start
+## 4. Windows quick start
 
 ### DB mode
 
-1. Edit `db_config.yaml` (same as above; network must reach `10.28.9.x`).
-2. Run:
+1. Edit `db_config.yaml` (network must reach `10.28.9.x`).
+2. Ensure packages installed (`pip install -r requirements.txt` or offline wheels).
+3. Run:
 
 ```bat
 run_monthly_from_db.bat 2026-07
@@ -100,13 +128,11 @@ run_monthly_from_db.bat 2026-07
 python tmone_report.py -m 2026-07 -i "input/JULY LIC" -o output
 ```
 
-Or edit `run_config.yaml` (`month`, `input_dir`) and use `run_monthly.bat`.
-
-**Note:** CSV mode only includes tenants that have CSV files. Empty folders (e.g. missing UNI5G CSV) are skipped. DB mode uses all tenants in `tenants.yaml`.
+**Note:** CSV mode only includes tenants that have CSV files. DB mode uses all tenants in `tenants.yaml`.
 
 ---
 
-## 4. Optional filters
+## 5. Optional filters
 
 ```bash
 # One ARC only
@@ -119,7 +145,7 @@ python3.9 run_monthly_from_db.py -m 2026-07 --tenants SAMB,TESCO,CCLITE
 python3.9 run_monthly_from_db.py -m 2026-07 --active-only
 ```
 
-Login-only workbook (existing flow):
+Login-only workbook:
 
 ```bash
 python3.9 run_full_login.py -m 2026-07 --from-db
@@ -133,9 +159,7 @@ python3.9 tmone_report.py -m 2026-07 --from-db -o output
 
 ---
 
-## 5. User types (Professional-Agent, Executive, Supervisor, Wallboard)
-
-### Classification rules
+## 6. User types (Professional-Agent, Executive, Supervisor, Wallboard)
 
 | CSV / DB `user_type` | License bucket | Shown on sheet (default) |
 |----------------------|----------------|---------------------------|
@@ -145,24 +169,9 @@ python3.9 tmone_report.py -m 2026-07 --from-db -o output
 | Supervisor | **supervisor** | Supervisor |
 | Wallboard / Wallboard-User | **wallboard** | Wallboard User |
 
-Executive is counted as **agent** so tenants like **CCLite** / **SAMB** show agent peaks on Dashboard (not only Supervisor).
+Executive is counted as **agent** so tenants like **CCLite** / **SAMB** show agent peaks on Dashboard.
 
-### Per-tenant agent rename (dynamic)
-
-Edit `tenants.yaml` — no code change needed.
-
-**Global default:**
-
-```yaml
-defaults:
-  tenant_sheet_agent_label: Professional-Agent
-  agent_user_types:
-    - Professional-Agent
-    - Ameyo-express
-    - Executive
-```
-
-**Rename agent label for specific tenants** (already configured):
+### Per-tenant agent rename
 
 ```yaml
 PRUBSN:
@@ -175,50 +184,30 @@ AIG_FMAD_132:
   agent_display_label: "Ameyo Pro-Dialer"
 ```
 
-**Full per-tenant control:**
-
-```yaml
-SOME_TENANT:
-  agent_display_label: "My Custom Name"
-  agent_user_types:          # optional: which CSV types count as agent
-    - Professional-Agent
-    - Executive
-  display_labels:            # optional: rename all buckets
-    agent: "My Custom Name"
-    supervisor: "Supervisor"
-    wallboard: "Wallboard User"
-```
-
 Logic file: `user_type_config.py`
 
 ---
 
-## 6. Login count rules
-
-For each tenant / license sheet:
+## 7. Login count rules
 
 1. Find **peak date** + **peak hour** (max concurrent users).
 2. Query sessions that **overlap that hour** (not the whole day).
 3. Write sheet: `user_id`, `login_time`, `logout_time`, `duration`.
 
-Session count should be close to the utilization peak count.
-
 ---
 
-## 7. CSV vs DB — why counts can differ
+## 8. CSV vs DB — why counts can differ
 
 | | CSV mode | DB mode |
 |--|----------|---------|
 | Tenant list | Folders with CSV files only | All keys in `tenants.yaml` |
-| Example July | 27 tenants, combined peak 691 | 30 tenants, combined peak 700 |
+| Example | Fewer tenants if folders empty | Full configured inventory |
 
-Extra DB-only tenants often: `PETRON_ARCH2`, `MBSA_ARCH2`, `IGLOO_247` (may be 0 if no July data).
-
-`Combined agent peak` = sum of each tenant’s own monthly max (not one same-day total across all tenants).
+`Combined agent peak` = sum of each tenant's own monthly max (not one same-day total).
 
 ---
 
-## 8. Important files
+## 9. Important files
 
 | File | Role |
 |------|------|
@@ -228,35 +217,35 @@ Extra DB-only tenants often: `PETRON_ARCH2`, `MBSA_ARCH2`, `IGLOO_247` (may be 0
 | `tenants.yaml` | Tenant registry, ARC, IDs, display labels |
 | `db_config.yaml` | DB credentials (do not commit secrets) |
 | `user_type_config.py` | User-type classification + display labels |
-| `db_connections.py` | Dual ARC DB connections |
-| `db_login_queries.py` | Peak-hour login SQL |
-| `db_usage_queries.py` | JRXML-equivalent usage SQL |
-| `excel_format.py` | Dashboard / Excel styling |
+| `prepare_usb_bundle.ps1` | Build offline wheel zip (needs Docker) |
+| `install_offline.sh` | Install wheels on air-gapped server |
+| `check_env.py` | Verify Python packages |
+| `OFFLINE_INSTALL.md` | Offline / no-internet guide |
 
 ---
 
-## 9. Monthly checklist
+## 10. Monthly checklist
 
 1. Set month: `-m YYYY-MM`
 2. Confirm `db_config.yaml` user/password
 3. Run: `python3.9 run_monthly_from_db.py -m YYYY-MM`
-4. Open utilization Excel → check Dashboard tenant count and peaks
-5. Open login Excel → spot-check a few sheets (e.g. TMSRC, CCLite, SAMB)
+4. Open utilization Excel → check Dashboard
+5. Open login Excel → spot-check a few sheets
 6. Copy `output/*.xlsx` for delivery
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
-| `role "YOUR_DB_USER" does not exist` | Edit `db_config.yaml` — replace placeholders with real credentials |
-| `source code string cannot contain null bytes` | File saved as UTF-16; re-copy UTF-8 scripts or run `fix_utf8_encoding.sh` |
+| `role "YOUR_DB_USER" does not exist` | Edit `db_config.yaml` — real credentials |
+| `source code string cannot contain null bytes` | Re-copy UTF-8 scripts / `fix_utf8_encoding.sh` |
 | Use `python` / SyntaxError | Always use `python3.9` |
-| Dashboard agent = 0 but sheet has Executive | Need `user_type_config.py` + `Executive` in `agent_user_types`; re-run |
-| CSV shows fewer tenants than DB | Empty / missing CSV folders; DB uses full `tenants.yaml` |
-| Login sessions ≫ peak count | Need peak-hour filter in `db_login_queries.py` (current code has it) |
+| Dashboard agent = 0 but sheet has Executive | Need `user_type_config.py` + Executive in agent types; re-run |
 | `no wheels for cp36` | `PYTHON3=python3.9 ./install_offline.sh` |
+| `not a supported wheel` | Rebuild USB zip with manylinux2014 (default in prepare script) |
+| Missing packages | Run `install_offline.sh` from USB bundle; then `check_env.py` |
 
 Connection test:
 
@@ -274,23 +263,25 @@ close_connection_pools(pools)
 
 ---
 
-## 11. Deploy / copy to server
-
-From Windows project folder, copy to `/opt/offline_bundle/license-utilization-automation/`:
-
-- Prefer folder: `server_hotfix\` (latest scripts), or full `offline_bundle\`
-- Always keep server `db_config.yaml` credentials (do not overwrite with example passwords)
-
-After copy, confirm UTF-8:
+## 12. Deploy / clone from GitHub
 
 ```bash
-file *.py | head
+git clone https://github.com/sagark-commits/License-Automation.git
+cd License-Automation
+```
+
+For air-gapped servers, prefer the **USB offline zip** (includes wheels), not a bare git clone (clone has no wheels).
+
+After copy, confirm:
+
+```bash
+python3.9 check_env.py
 python3.9 -c "import user_type_config, tmone_report, run_monthly_from_db; print('OK')"
 ```
 
 ---
 
-## 12. Flow diagram
+## 13. Flow diagram
 
 ```
 tenants.yaml (arc + labels)
@@ -314,11 +305,9 @@ output/
 
 ---
 
-## 13. Support contacts / ownership
+## 14. Related docs
 
-- Config owner: edit `tenants.yaml` for new tenants, `agent_display_label`, campaign IDs
-- DB access: `db_config.yaml` on server only
-- Rebuild offline wheels: `prepare_usb_bundle.ps1` on a machine with internet/Docker if needed
-
-For dual-ARC notes only, see also: `HOWTO_DUAL_ARC_DB.txt`  
-For offline install: `SERVER_HANDOFF_README.txt`
+- `OFFLINE_INSTALL.md` — air-gapped install
+- `HOWTO_DUAL_ARC_DB.txt` — dual ARC merge
+- `SERVER_HANDOFF_README.txt` — server handoff
+- `README.md` — project overview
