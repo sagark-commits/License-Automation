@@ -14,8 +14,8 @@ python3.9 run_monthly_from_db.py -m 2026-07
 
 **Output**
 
-- `output/Tmone license-Utilaztion_YYYY_MM.xlsx` — Dashboard + Summary + tenant sheets  
-- `output/Tmone--Login Count Tmone_Mon_YY.xlsx` — peak-hour login sessions  
+- `output/Tmone license-Utilaztion_YYYY_MM.xlsx` - Dashboard + Summary + tenant sheets
+- `output/Tmone--Login Count Tmone_Mon_YY.xlsx` - peak-hour login sessions
 
 ## Documentation
 
@@ -32,8 +32,8 @@ python3.9 run_monthly_from_db.py -m 2026-07
 
 ## Configuration
 
-1. **`db_config.yaml`** — copy from `db_config.yaml.example` (never commit real credentials)
-2. **`tenants.yaml`** — tenant registry, ARC, contact center IDs, `agent_display_label` overrides
+1. **`db_config.yaml`** - copy from `db_config.yaml.example` (never commit real credentials)
+2. **`tenants.yaml`** - tenant registry, ARC, contact center IDs, `agent_display_label` overrides
 
 ### User types
 
@@ -81,6 +81,6 @@ db_config.yaml.example   # DB config template
 HOWTO_USE.md             # full how-to
 ```
 
-## License / internal use
+## Security note
 
-Internal TMONE / Ameyo operations tooling. Do not commit `db_config.yaml` with live passwords.
+Internal TMONE / Ameyo operations tooling. Do **not** commit `db_config.yaml` with live passwords.
