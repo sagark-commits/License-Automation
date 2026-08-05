@@ -1,0 +1,8 @@
+month: 2026-06
+input_dir: input/June LIC
+login_dir: input/login
+output_dir: output
+arc: ''
+active_only: false
+from_db: false
+verify_db: false

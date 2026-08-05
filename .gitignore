@@ -1,0 +1,45 @@
+# Secrets
+db_config.yaml
+
+# Local data / outputs
+input/
+output/
+__pycache__/
+*.pyc
+.Python
+.venv/
+venv/
+.env
+
+# Large offline wheel bundles (rebuild with prepare_usb_bundle.*)
+offline_bundle/
+offline_bundle_old_*/
+*.zip
+server_hotfix/
+
+# Generated Excel / PDF artifacts
+*.xlsx
+*.xls
+!requirements.txt
+
+# Temp / patch helpers (not production)
+_*
+*.part1
+*.part2
+patch_*.py
+assemble.py
+assemble_tmone.py
+fix_run_config.py
+gen_pdf.py
+generate_documentation_pdf.py
+license_utilization.part*
+tmone_report.part*
+tmone_report_main.py
+tmone_offline_bundle*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

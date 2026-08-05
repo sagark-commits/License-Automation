@@ -1,0 +1,32 @@
+TMONE License Report — CSV Mode (simple)
+=========================================
+
+1. Export TMONE usage CSV from Ameyo for each tenant (monthly).
+2. Copy CSV files into folders under:
+     input\<Tenant folder name>\*.csv
+
+   Example:
+     input\TESCO Arch\usage.csv
+     input\NSRC\NSRC_june.csv
+
+3. (Optional) For login count detail on peak day, export login CSVs to:
+     input\login\<tenant>\agent.csv
+   Files should contain: user_id, login_time, logout_time
+
+4. Edit run_config.yaml — set month (2026-06 or June).
+
+5. Run:
+     run_monthly.bat
+   Or:
+     python tmone_report.py -i input -m 2026-06 -o output
+
+OUTPUT (in output/ folder)
+--------------------------
+- Tmone license-Utilaztion_2026_06.xlsx   (summary + per-tenant sheets)
+- Tmone--Login Count Tmone_Jun_26.xlsx    (login sessions on peak dates)
+
+Tips
+----
+- Filenames/folders must match patterns in tenants.yaml (csv_patterns, folder_patterns).
+- Use --arc ARC-1 or --arc ARC-2 to filter tenants.
+- Wallboard CSV: filename must contain "wallboard".

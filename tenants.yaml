@@ -1,0 +1,395 @@
+﻿# TMONE License Utilization - tenant registry
+# arc: ARC-1 = Ameyo VPC  |  ARC-2 = Ameyo BPO
+
+defaults:
+  # ---------------------------------------------------------------------------
+  # USER TYPE RULES (production)
+  # ---------------------------------------------------------------------------
+  # Classification (CSV/DB -> license bucket):
+  #   agent_user_types      -> counted as AGENT peak (Professional-Agent, Executive, ...)
+  #   supervisor_user_types -> counted as SUPERVISOR (shown as-is)
+  #   wallboard_user_types  -> counted as WALLBOARD (shown as-is)
+  #
+  # Display on Excel sheets:
+  #   tenant_sheet_agent_label  -> default name for agent rows (Professional-Agent)
+  #   Per tenant you can override with:
+  #     agent_display_label: "Ameyo Pro-Dialer"
+  #     display_labels: { agent: "...", supervisor: "...", wallboard: "..." }
+  #     agent_user_types: [Professional-Agent, Executive]   # optional per-tenant list
+  # ---------------------------------------------------------------------------
+  agent_user_types:
+    - Professional-Agent
+    - Ameyo-express
+    - Executive
+  supervisor_user_types:
+    - Supervisor
+  wallboard_user_types:
+    - Wallboard User
+    - Wallboard
+    - Wallboard-User
+  wallboard_filename_patterns:
+    - wallboard
+    - Wallboard
+  license_labels:
+    agent: Professional-Agent
+    supervisor: Supervisor
+    wallboard: Wallboard User
+  tenant_sheet_agent_label: Professional-Agent
+  # Active contact centers (from call_history query on oneproduct)
+  active_contact_centers:
+    ARC-2: [5, 16, 20, 47, 48, 51, 53]
+    ARC-1: [7, 10, 14, 16, 17, 18, 23, 26, 27, 29, 35, 43, 45, 48, 52, 53]
+
+tenants:
+  # --- ARC-2 (Ameyo BPO) ---
+  TESCO:
+    arc: ARC-2
+    project_name: "TESCO\nArch -2"
+    sheet_name: TESCO
+    contact_center_id: 5
+    use_simple_query: true
+    csv_patterns: [TESCO, Tesco]
+    folder_patterns: ["TESCO ARC 2", "Tesco Arch"]
+    login_sheets:
+      agent: Ameyo-Express_TESCO
+      supervisor: Supervisor_TESCO
+      wallboard: Wallboard_TESCO
+
+  TMSRC_ARCH2:
+    arc: ARC-2
+    project_name: "TMSRC\nARCH-2"
+    sheet_name: "TMSRC- ARCH2"
+    contact_center_id: 16
+    campaign_ids: ["98", "99", "100", "101", "102", "103"]
+    use_simple_query: false
+    csv_patterns: [TMSRC]
+    folder_patterns: ["TMSRC ARC 2", "TMSRC Arch 2"]
+    login_sheets:
+      agent: Ameyo-express-TMSRC-ARCH-2
+      supervisor: Sup_TMRSC-ARCH-2
+
+  PMCARE:
+    arc: ARC-2
+    project_name: "PMCare\nARCH 2"
+    sheet_name: PM_Care
+    contact_center_id: 20
+    csv_patterns: [PM_Care, PMCare, PMcare]
+    folder_patterns: ["PMCARE ARC 2"]
+    login_sheets:
+      agent: Ameyo-Express_PMCARE
+      supervisor: Supervisor_PMCARE
+
+  TALENT:
+    arc: ARC-2
+    project_name: "Talent Corp\nARCH 2"
+    sheet_name: "Talent crop-ARC-2"
+    contact_center_id: 47
+    csv_patterns: [Talent]
+    folder_patterns: ["TELENTCORP ARC 2", "Talent corp", "Telent corp"]
+    login_sheets:
+      agent: "Talent crop Ameyo-Express agent"
+      supervisor: "Talent crop Supervisor"
+
+  PETRON_ARCH2:
+    arc: ARC-2
+    project_name: "Petron\nARCH-2"
+    sheet_name: "Petron Arch 2"
+    contact_center_id: 48
+    csv_patterns: [Petron]
+    folder_patterns: ["Petron Arch 2"]
+    login_sheets:
+      agent: Ameyo-Express_Petron_ARCH2
+      supervisor: Supervisor_Petron_ARCH2
+      wallboard: Wallboard_Petron_ARCH2
+
+  MBSA_ARCH2:
+    arc: ARC-2
+    project_name: "MBSA\nARC-2"
+    sheet_name: "MBSA ARC-2"
+    contact_center_id: 51
+    csv_patterns: [MBSA]
+    folder_patterns: ["MBSA arch 2", "MBSA ARC-2"]
+    login_sheets:
+      agent: MBSA_Ameyo-Express_ARCH2
+
+  NSRC:
+    arc: ARC-2
+    project_name: "NSRC\nARC-2"
+    sheet_name: "NSRC- ARC 2"
+    contact_center_id: 53
+    csv_patterns: [NSRC]
+    folder_patterns: ["NSRC ARC 2", "NSRC"]
+    login_sheets:
+      agent: "NSRC Ameyo-Express"
+      supervisor: "NSRC Supervisor"
+      wallboard: "NSRC WallBoard"
+
+  MBSA:
+    arc: ARC-1
+    project_name: "MBSA\nARC-1"
+    sheet_name: "MBSA ARC-1"
+    contact_center_id: 53
+    campaign_ids: ["268"]
+    # VPC MBSA uses cc 53 + campaign 268; BPO MBSA is MBSA_ARCH2 (cc 51)
+    csv_patterns: [MBSA]
+    folder_patterns: ["MBSA ARC 1"]
+    login_sheets:
+      agent: "MBSA Ameyo-express"
+
+  # --- ARC-1 (Ameyo VPC) ---
+  MBSP:
+    arc: ARC-1
+    project_name: "MBSP\nARC-1"
+    sheet_name: "MBSP-ARC-1"
+    contact_center_id: 7
+    campaign_ids: ["69"]
+    wallboard_user_id: wallboard_mbsp
+    csv_patterns: [MBSP]
+    folder_patterns: ["MBSP ARC 1"]
+    login_sheets:
+      agent: Ameyo-Express-MBSP-ARC-1
+      supervisor: MBSP-Supervisor
+      wallboard: MBSP-WALLBOARD
+
+  PBAPP:
+    arc: ARC-1
+    project_name: "PBAPP\nARC-1"
+    sheet_name: "PBAPP-ARC-1"
+    contact_center_id: 7
+    campaign_ids: ["150", "151", "130", "70", "182"]
+    csv_patterns: [PBAPP]
+    folder_patterns: ["PBAPP ARC 1"]
+    login_sheets:
+      agent: Ameyo-Express-PBAPP
+      supervisor: SUPERVISOR-PBAPP-ARC-1
+
+  SAMB:
+    arc: ARC-1
+    project_name: "SAMB\nARCH -1"
+    sheet_name: SAMB
+    contact_center_id: 10
+    csv_patterns: [SAMB]
+    folder_patterns: ["SAMB ARC 1"]
+    login_sheets:
+      agent: Ameyo-Express_SAMB
+      supervisor: Supervisor_SAMB
+      executive: Excutive_SAMB
+
+  AIG_FM:
+    arc: ARC-1
+    project_name: "AIG__FM\nArch- 1"
+    sheet_name: "Arch-1__AIG_FM"
+    contact_center_id: 14
+    csv_patterns: [AIG]
+    folder_patterns: ["AIG_FM ARC 1"]
+    login_sheets:
+      agent: Ameyo-express_AIG_FM
+      supervisor: ARCH-1_Supervisor_AIG_FM
+
+  TMSRC_ARCH1:
+    arc: ARC-1
+    project_name: "TMSRC\nARCH-1"
+    sheet_name: TMRC-ARCH-1
+    contact_center_id: 16
+    campaign_ids: ["98", "99", "100", "101", "102", "103"]
+    csv_patterns: [TMSRC]
+    folder_patterns: ["TMSRC ARC 1", "MMSRC arch 1", "MMSRC arch"]
+    login_sheets:
+      agent: "Ameyo-Express_TMSRC (ARCH1"
+      supervisor: ARCH-1-Superviosr_TMSRC
+
+  CCLITE:
+    arc: ARC-1
+    project_name: "CCLite\narch 1"
+    sheet_name: CClite
+    contact_center_id: 17
+    csv_patterns: [CClite, CCLite]
+    folder_patterns: ["CCLITE ARC 1"]
+    login_sheets:
+      agent: Ameyo-Express_CCLite
+      supervisor: Supervisor_CCLite
+
+  TABUNG:
+    arc: ARC-1
+    project_name: "TabungHaji\narch 1"
+    sheet_name: Tabung
+    contact_center_id: 18
+    csv_patterns: [Tabung]
+    folder_patterns: ["TABUNGHAJI ARC 1"]
+    login_sheets:
+      agent: Ameyo-Express_TABUNGHAJI
+      supervisor: Supervisor_TABUNGHAJI
+
+  SATU:
+    arc: ARC-1
+    project_name: "SATU\nARCH 1"
+    sheet_name: SATU
+    contact_center_id: 26
+    csv_patterns: [SATU, Satu]
+    folder_patterns: ["SATU ARC 1"]
+    login_sheets:
+      agent: Ameyo-Express_SATU
+      supervisor: Supervisor_SATU
+
+  PRUBSN:
+    arc: ARC-1
+    project_name: "PruBSN\nARCH1"
+    sheet_name: PruBSN
+    contact_center_id: 27
+    # Professional-Agent + Executive shown as Ameyo Pro-Dialer on sheets
+    agent_display_label: "Ameyo Pro-Dialer"
+    csv_patterns: [PruBSN]
+    folder_patterns: ["PRUBSN ARC 1", "PRUBSN TAKAFUL"]
+    login_sheets:
+      agent: Pro-Dialer_PruBSN
+      supervisor: Supervisor_PruBSN
+
+  OCC_ZEN:
+    arc: ARC-1
+    project_name: "OCN_GEN\nARCH 1"
+    sheet_name: OCN_ZEN
+    contact_center_id: 29
+    csv_patterns: [OCC, OCN]
+    folder_patterns: ["OCC ZEN ARC 1"]
+    login_sheets:
+      agent: Ameyo-Express_OCN
+      supervisor: supervisor_OCN
+
+  ISADA:
+    arc: ARC-1
+    project_name: "i_SADA\nARCH 1"
+    sheet_name: I_SADA
+    contact_center_id: 35
+    csv_patterns: [i_SADA, Isada, iSADA]
+    folder_patterns: ["ISADA ACR 1", "ISADA"]
+    login_sheets:
+      agent: Ameyo-Express_iSADA
+      supervisor: Supervisor_iSADA
+      wallboard: Wallboard_user_iSADA
+
+  KPWKM:
+    arc: ARC-1
+    project_name: "KPWKM\nARCH-1"
+    sheet_name: KPWKM
+    contact_center_id: 43
+    csv_patterns: [KPWKM]
+    folder_patterns: ["KPWKM ARC 1"]
+    login_sheets:
+      agent: KPMW_Ameyo-Express
+
+  GAMUDA:
+    arc: ARC-1
+    project_name: "Gamuda\nARCH-1"
+    sheet_name: Garmuda
+    contact_center_id: 45
+    csv_patterns: [Gamuda, Garmuda]
+    folder_patterns: ["GAMUDA ARC 1"]
+    login_sheets:
+      agent: Ameyo-Express_Gamuda
+
+  UNI5G:
+    arc: ARC-1
+    project_name: "UNI5G\nARCH 1"
+    sheet_name: UNI_5G
+    contact_center_id: 23
+    csv_patterns: [UNI5G]
+    folder_patterns: ["UNI5G ARC 1"]
+    login_sheets:
+      agent: Ameyo-Express_UNI5G
+
+  PETRON_ARCH1:
+    arc: ARC-1
+    project_name: "Petron\nARCH-1"
+    sheet_name: Arch1_Petron
+    contact_center_id: 48
+    campaign_ids: ["269", "264", "251", "275"]
+    csv_patterns: [Petron]
+    folder_patterns: ["PETRON CC ARC 1", "Petron Arch 1"]
+    login_sheets:
+      agent: "ARCH-1_Petron Ameyo-Express"
+      supervisor: Arch1 Petron_Supervisor
+      wallboard: Arch_1_Petron_Wallboard
+
+  SARAWAK:
+    arc: ARC-1
+    project_name: "Sarawak_Water_Setup\nARCH 1"
+    sheet_name: Sarawak_Water_Setup
+    contact_center_id: 52
+    csv_patterns: [Sarawak]
+    folder_patterns: ["SARAWAK WATER ARC 1"]
+    login_sheets:
+      agent: Ameyo-Express_Sarawak
+
+  IGLOO_247:
+    arc: ARC-1
+    project_name: "IGLOO_247 campaign\nARCH 1"
+    sheet_name: IGLOO_247
+    contact_center_id: 14
+    campaign_ids: ["247"]
+    csv_patterns: [Igloo, IGLOO, igloo, 247]
+    folder_patterns: [Igloo, IGLOO, igloo]
+    login_sheets:
+      agent: igloo_247_Ameyo-Express
+      supervisor: Igloo247_Sup
+
+  BONUSLINK_209:
+    arc: ARC-1
+    project_name: "Bonuslink _209 campaign\nARCH 1"
+    sheet_name: Bonuslink_209
+    contact_center_id: 14
+    campaign_ids: ["209"]
+    agent_display_label: "Ameyo Pro-Dialer"
+    csv_patterns: [209, Bonuslink, bonuslink]
+    folder_patterns: [209, Bonuslink]
+    login_sheets:
+      agent: Bonuslink_209_Ameyo-Express
+      supervisor: Bonuslink_209_Sup
+
+  BONUSLINK_226:
+    arc: ARC-1
+    project_name: "226_Bonuslink_A\nARCH 1"
+    sheet_name: 226_Bonuslink_A
+    contact_center_id: 14
+    campaign_ids: ["226"]
+    csv_patterns: [226, Bonuslink]
+    folder_patterns: [226, Bonuslink]
+    login_sheets:
+      agent: Bonuslink_226_Ameyo-Express
+      supervisor: "Bonuslink_226 _ Supervispor "
+
+  PRUBSN_169:
+    arc: ARC-1
+    project_name: "169_PruBSN_Takaful_WelcomeCalls\nARCH 1"
+    sheet_name: 169_PruBSN_Takaful_WelcomeCalls
+    contact_center_id: 27
+    campaign_ids: ["169"]
+    csv_patterns: ["169", WelcomeCalls]
+    folder_patterns: ["169"]
+    login_sheets:
+      agent: 169_Ameyo-Express
+      supervisor: 169_Sup
+
+  PRUBSN_168:
+    arc: ARC-1
+    project_name: "168_PruBSN_Takaful_Conservation\nARCH 1"
+    sheet_name: 168_PruBSN_Takaful_Conservation
+    contact_center_id: 27
+    campaign_ids: ["168"]
+    csv_patterns: ["168", Conservation]
+    folder_patterns: ["168"]
+    login_sheets:
+      agent: 168_PrUBSN-Ameyo-Express
+      supervisor: 168_sup
+
+  AIG_FMAD_132:
+    arc: ARC-1
+    project_name: "Campign_AIG_FMAD_132\nARCH 1"
+    sheet_name: Campign_AIG_FMAD_132
+    contact_center_id: 14
+    campaign_ids: ["132"]
+    agent_display_label: "Ameyo Pro-Dialer"
+    csv_patterns: ["132", FMAD]
+    folder_patterns: ["132", FMAD, "AIGFM 132"]
+    login_sheets:
+      agent: "132 _ Ameyo-Pro-Dialer"
+      supervisor: "132 _sup "

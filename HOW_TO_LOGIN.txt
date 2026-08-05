@@ -1,0 +1,28 @@
+﻿TMONE Login Count Report
+========================
+
+Output format (same as April/May sample):
+  user_id | login_time | logout_time | duration
+One Excel sheet per tenant license, e.g. Supervisor_TESCO, Ameyo-Express_TESCO
+
+OPTION A - Direct from database (recommended if DB reachable)
+-------------------------------------------------------------
+1. Set credentials in db_config.yaml
+2. Run:
+   python tmone_report.py -m 2026-06 --verify-db
+   OR double-click run_with_login.bat
+
+OPTION B - Run SQL on server, import CSVs (air-gapped)
+------------------------------------------------------
+1. Run utilization report first:
+   python tmone_report.py -m 2026-06
+2. Open output/login_sql/ - one .sql file per sheet with peak date filled in
+   See login_manifest.csv for sheet name, peak date, DB host
+3. On oneproduct (ARC-1: 10.28.9.103, ARC-2: 10.28.9.110) run each SQL
+4. Export results as CSV named exactly like the sheet, e.g. Supervisor_TESCO.csv
+   psql pipe format is supported
+5. Place all CSV files in: input/login/
+6. Re-run:
+   python tmone_report.py -m 2026-06
+
+Output: output/Tmone--Login Count Tmone_Jun_26.xlsx
