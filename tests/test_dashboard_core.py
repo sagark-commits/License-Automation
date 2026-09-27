@@ -9,6 +9,7 @@ Run with:  pip install -r requirements-dev.txt && pytest tests/ -v
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -313,6 +314,41 @@ class TestRegistryHelpers:
         assert set(both) == {"TESCO", "MBSP", "PBAPP"}
 
 
+class TestLoadTenantsPlainCache:
+    def test_reflects_mutation_after_write(self, isolated_paths):
+        before = core.load_tenants_plain()
+        assert "NEWCO" not in before["tenants"]
+        core.add_tenant("NEWCO", {"arc": "ARC-1", "project_name": "N", "sheet_name": "N", "contact_center_id": 55})
+        after = core.load_tenants_plain()
+        assert "NEWCO" in after["tenants"], "cache must invalidate once the file actually changed"
+
+    def test_does_not_leak_between_different_paths_with_equal_mtime(self, tmp_path, monkeypatch):
+        """The cache key must include the path, not just mtime -- two
+        different tenants.yaml files (e.g. two tests' isolated tmp_path
+        fixtures) could plausibly land on the same mtime, especially on
+        filesystems with coarse timestamp resolution or fast successive
+        writes. Force that exact collision here and confirm no leakage."""
+        path_a = tmp_path / "a" / "tenants.yaml"
+        path_b = tmp_path / "b" / "tenants.yaml"
+        path_a.parent.mkdir(parents=True)
+        path_b.parent.mkdir(parents=True)
+        path_a.write_text("tenants:\n  A_TENANT:\n    arc: ARC-1\n    contact_center_id: 1\n", encoding="utf-8")
+        path_b.write_text("tenants:\n  B_TENANT:\n    arc: ARC-1\n    contact_center_id: 2\n", encoding="utf-8")
+
+        forced_mtime = path_a.stat().st_mtime
+        os.utime(path_b, (forced_mtime, forced_mtime))
+        assert path_a.stat().st_mtime == path_b.stat().st_mtime  # collision actually forced
+
+        monkeypatch.setattr(core, "TENANTS_PATH", path_a)
+        result_a = core.load_tenants_plain()
+        monkeypatch.setattr(core, "TENANTS_PATH", path_b)
+        result_b = core.load_tenants_plain()
+
+        assert "A_TENANT" in result_a["tenants"]
+        assert "B_TENANT" in result_b["tenants"]
+        assert "A_TENANT" not in result_b["tenants"], "must not have served A's cached data for B's path"
+
+
 # ---------------------------------------------------------------------------
 # run history
 # ---------------------------------------------------------------------------
@@ -330,6 +366,17 @@ class TestRunHistory:
         core.RUN_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
         core.RUN_HISTORY_PATH.write_text("{not valid json", encoding="utf-8")
         assert core.load_run_history() == []
+
+    def test_valid_json_wrong_type_treated_as_empty_not_a_crash(self, isolated_paths):
+        """{} and {"note": "..."} are both VALID json.loads() results, just
+        not a list -- without this check, append_run_history's
+        history.append(entry) blows up with an unhandled AttributeError on a
+        dict, right after a report has already been successfully written."""
+        core.RUN_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        core.RUN_HISTORY_PATH.write_text('{"note": "someone reset this by hand"}', encoding="utf-8")
+        assert core.load_run_history() == []
+        core.append_run_history({"month": "2026-09"})  # must not raise
+        assert [h["month"] for h in core.load_run_history()] == ["2026-09"]
 
 
 # ---------------------------------------------------------------------------
@@ -641,3 +688,31 @@ class TestVerifyLoginCounts:
         assert rows[0]["utilization_peak_count"] == 4
         assert rows[0]["login_session_users"] == 4
         assert rows[0]["match"] is True
+
+    def test_zero_sessions_gets_a_note_not_a_silent_blank(self, isolated_paths, monkeypatch):
+        """tmone_report.fetch_login_sessions() catches its own per-sheet query
+        exceptions internally and substitutes an empty DataFrame instead of
+        re-raising, so a silent query failure and a genuine zero-session peak
+        hour are otherwise indistinguishable on the one screen whose job is
+        catching wrong billing numbers. A 0-vs-N mismatch must carry a note
+        explaining that ambiguity, not blank note=""."""
+        cfg = {"arc": "ARC-1", "login_sheets": {"agent": "SheetA"}}
+        monkeypatch.setattr(core, "iter_tenants_for_db", lambda config, keys, arc_filter, active_only: iter([("TESTCO", cfg)]))
+        monkeypatch.setattr(core, "connect_login_databases", lambda args, script_dir: {"login": {"ARC-1": FakeConnection([])}})
+        monkeypatch.setattr(core, "connection_for_arc", lambda conns, arc: conns[arc])
+        monkeypatch.setattr(core, "close_connection_pools", lambda pools: None)
+
+        td = TenantData(key="TESTCO", cfg=cfg, usage_df=pd.DataFrame())
+        td.peaks = {"agent": LicensePeak(license_key="agent", license_label="Agent", peak_date="2026-07-15", peak_count=3, peak_hour=14)}
+
+        def _fake_fetch_login_sessions(conn, td_arg, config):
+            td_arg.login_sessions["SheetA"] = pd.DataFrame(columns=["user_id"])  # empty -- 0 sessions
+
+        monkeypatch.setattr(core, "build_tenant_data_from_db", lambda *a, **k: td)
+        monkeypatch.setattr(core, "fetch_login_sessions", _fake_fetch_login_sessions)
+
+        rows = core.verify_login_counts("2026-07", "Both", False)
+        assert len(rows) == 1
+        assert rows[0]["login_session_users"] == 0
+        assert rows[0]["match"] is False
+        assert rows[0]["note"], "a 0-session mismatch must explain the ambiguity, not be blank"

@@ -114,15 +114,25 @@ with tab_new:
             picked_id = f"{picked['arc']}::{picked['contact_center_id']}"
             if st.session_state.get("_quick_add_last_pick") != picked_id:
                 st.session_state["_quick_add_last_pick"] = picked_id
-                st.session_state["quick_add_key_input"] = f"NEW_CC{picked['contact_center_id']}"
+                default_label = f"NEW_CC{picked['contact_center_id']}"
+                st.session_state["quick_add_key_input"] = default_label
+                # sheet_name/project_name get their OWN stable keys (not a bare
+                # value=key) -- a value= that's recomputed from another widget's
+                # live value gets silently discarded by Streamlit's auto-keying
+                # the moment that other value differs from the render where the
+                # user actually typed into this field, even within one form
+                # submission (confirmed empirically). Same class of bug as the
+                # key field above, just for two more fields.
+                st.session_state["quick_add_sheet_input"] = default_label
+                st.session_state["quick_add_project_input"] = default_label
 
             with st.form("quick_add_form"):
                 c1, c2 = st.columns(2)
                 with c1:
                     key = st.text_input("Tenant key (unique)", key="quick_add_key_input").strip().upper()
-                    sheet_name = st.text_input("sheet_name (Excel tab name)", value=key)
+                    sheet_name = st.text_input("sheet_name (Excel tab name)", key="quick_add_sheet_input")
                 with c2:
-                    project_name = st.text_input("project_name", value=key)
+                    project_name = st.text_input("project_name", key="quick_add_project_input")
                     use_simple_query = st.checkbox("use_simple_query", value=True)
                 agent_sheet = st.text_input("agent login sheet name (optional)")
                 quick_submit = st.form_submit_button("Register this tenant")
@@ -167,7 +177,7 @@ with tab_reports:
     st.subheader("Run a monthly report")
     col1, col2, col3 = st.columns(3)
     with col1:
-        month_value = st.date_input("Month", value=date.today().replace(day=1))
+        month_value = st.date_input("Month", value=date.today().replace(day=1), key="report_month")
         month_str = f"{month_value.year:04d}-{month_value.month:02d}"
     with col2:
         arc_choice = st.selectbox("ARC", ["Both", "ARC-1", "ARC-2"])
@@ -196,6 +206,15 @@ with tab_reports:
             "The button below is disabled until it finishes."
         )
         with st.expander("Stuck? Force-clear the lock (only if the process actually died)"):
+            # Scope the confirmation to THIS specific lock instance (pid +
+            # acquired_at) -- otherwise ticking the box for a genuinely-dead
+            # lock leaves it checked, and it stays armed for a completely
+            # different, genuinely-running process's lock later in the same
+            # session with no fresh confirmation ever given for that one.
+            lock_identity = f"{lock.get('pid')}::{lock.get('acquired_at')}"
+            if st.session_state.get("_confirm_clear_lock_target") != lock_identity:
+                st.session_state["_confirm_clear_lock_target"] = lock_identity
+                st.session_state["confirm_clear_lock"] = False
             confirm_clear = st.checkbox("I've confirmed no run_monthly_from_db.py process is really running", key="confirm_clear_lock")
             if st.button("Force-clear lock", disabled=not confirm_clear):
                 core.force_clear_report_lock()
@@ -398,6 +417,20 @@ with tab_campaigns:
                     return f"{c['campaign_id']}{name}{tag}"
 
                 labels_by_id = {c["campaign_id"]: _label(c) for c in campaigns}
+
+                # These two widgets use fixed keys, but their `index=`/`default=`
+                # depend on the CURRENTLY SELECTED tenant's data. Once
+                # session_state holds a value for a keyed widget, Streamlit
+                # ignores index=/default= on every later render with that same
+                # key -- so switching tenants without clearing these first would
+                # silently keep showing tenant A's mode/selection (or reset to
+                # empty once A's labels aren't valid options for B), never
+                # reflecting tenant B's actual current campaign_ids.
+                if st.session_state.get("_campaign_widgets_last_tenant") != tenant_key:
+                    st.session_state["_campaign_widgets_last_tenant"] = tenant_key
+                    st.session_state.pop("campaign_mode", None)
+                    st.session_state.pop("campaign_multiselect", None)
+
                 mode = st.radio(
                     "Report scope for this tenant",
                     ["Full tenant (no campaign filter)", "Specific campaigns"],
@@ -525,6 +558,13 @@ with tab_tenants:
     st.caption("For customers who were deleted / offboarded — removes the entry from tenants.yaml.")
     if tenants:
         remove_key = st.selectbox("Tenant to remove", sorted(tenants.keys()), key="remove_key")
+        # Reset the confirmation whenever the SELECTED tenant changes -- a
+        # ticked box left over from confirming a different tenant must not
+        # silently carry over and arm deletion of whichever tenant is
+        # selected next with no fresh confirmation for that specific one.
+        if st.session_state.get("_remove_confirm_target") != remove_key:
+            st.session_state["_remove_confirm_target"] = remove_key
+            st.session_state["remove_confirm"] = False
         confirm = st.checkbox(f"I'm sure I want to remove '{remove_key}'", key="remove_confirm")
         if st.button("Remove tenant", disabled=not confirm):
             try:

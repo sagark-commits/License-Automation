@@ -224,10 +224,36 @@ def load_tenants_raw() -> dict[str, Any]:
         return _ryaml.load(fh) or {}
 
 
+_tenants_plain_cache: dict[str, Any] = {"key": None, "data": None}
+
+
 def load_tenants_plain() -> dict[str, Any]:
-    """Plain-dict view (safe_load) for read-only display — no comments/anchors."""
+    """Plain-dict view (safe_load) for read-only display — no comments/anchors.
+
+    Cached by (path, mtime): dashboard.py reruns its ENTIRE script on every
+    widget interaction anywhere on the page, and several tabs call this
+    unconditionally on every rerun (not gated behind a button), so a single
+    click can re-parse tenants.yaml from scratch 2-3 times. Cheap for a small
+    registry today, but free to avoid. The path is part of the cache key (not
+    just mtime) so this can never serve stale data for the wrong file if
+    TENANTS_PATH is ever repointed — e.g. exactly what the test suite does,
+    monkeypatching it to a fresh tmp_path per test, where two different
+    files could plausibly land on the same mtime. Callers must treat the
+    returned dict as read-only — it's the same cached object handed back to
+    every caller until the file changes, so an in-place mutation here would
+    silently corrupt what every other caller sees until the next edit."""
+    try:
+        mtime = TENANTS_PATH.stat().st_mtime
+    except OSError:
+        mtime = None
+    cache_key = (str(TENANTS_PATH), mtime)
+    if mtime is not None and _tenants_plain_cache["key"] == cache_key:
+        return _tenants_plain_cache["data"]
     with TENANTS_PATH.open("r", encoding="utf-8") as fh:
-        return yaml.safe_load(fh) or {}
+        data = yaml.safe_load(fh) or {}
+    _tenants_plain_cache["key"] = cache_key
+    _tenants_plain_cache["data"] = data
+    return data
 
 
 def registered_contact_centers(plain_cfg: dict[str, Any]) -> dict[tuple[str, int], list[str]]:
@@ -365,9 +391,15 @@ def load_run_history() -> list[dict[str, Any]]:
     if not RUN_HISTORY_PATH.exists():
         return []
     try:
-        return json.loads(RUN_HISTORY_PATH.read_text(encoding="utf-8"))
+        data = json.loads(RUN_HISTORY_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
+    # Valid JSON but not a list (e.g. an ops person hand-edited it to `{}` or
+    # `{"note": "reset"}`) must be treated the same as corrupt -- otherwise
+    # append_run_history()'s `history.append(entry)` blows up with an
+    # unhandled AttributeError right after a report has already been
+    # successfully written, and that run never gets recorded.
+    return data if isinstance(data, list) else []
 
 
 def append_run_history(entry: dict[str, Any]) -> None:
@@ -517,6 +549,21 @@ def verify_login_counts(month_str: str, arc_choice: str, active_only: bool) -> l
                     continue
                 session_df = td.login_sessions.get(sheet_name)
                 distinct_users = int(session_df["user_id"].nunique()) if session_df is not None and not session_df.empty else 0
+                note = ""
+                if distinct_users == 0:
+                    # tmone_report.fetch_login_sessions() catches its own
+                    # per-sheet query exceptions internally and substitutes an
+                    # empty DataFrame rather than re-raising (so the `except`
+                    # around fetch_login_sessions() above never sees this) --
+                    # meaning a silent query failure looks IDENTICAL to a
+                    # genuine zero-session peak hour: an unexplained mismatch
+                    # on the one screen whose job is catching wrong billing
+                    # numbers. Flag it so it isn't mistaken for confirmed data.
+                    note = (
+                        "0 login sessions found for this peak hour — could be a genuine "
+                        "discrepancy, or the login query silently failed for this sheet "
+                        "(check the server console for a 'WARN login query' line)."
+                    )
                 rows.append(
                     {
                         "tenant": key,
@@ -528,7 +575,7 @@ def verify_login_counts(month_str: str, arc_choice: str, active_only: bool) -> l
                         "utilization_peak_count": peak.peak_count,
                         "login_session_users": distinct_users,
                         "match": distinct_users == peak.peak_count,
-                        "note": "",
+                        "note": note,
                     }
                 )
     finally:
