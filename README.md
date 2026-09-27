@@ -17,6 +17,23 @@ python3.9 run_monthly_from_db.py -m 2026-07
 - `output/Tmone license-Utilaztion_YYYY_MM.xlsx` - Dashboard + Summary + tenant sheets
 - `output/Tmone--Login Count Tmone_Mon_YY.xlsx` - peak-hour login sessions
 
+## Dashboard (web UI)
+
+A browser dashboard wraps the CLI so you don't need the terminal for day-to-day use:
+
+```bash
+cd /opt/offline_bundle/license-utilization-automation
+./run_dashboard.sh          # streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0
+```
+
+Open `http://<server-ip>:8501`. It runs on the same server (same `db_config.yaml`, same DB access as the CLI) and has three tabs:
+
+- **Monthly reports** — pick a month, run `run_monthly_from_db.py`, watch the log live, download the resulting `.xlsx` files.
+- **Tenants** — view the current `tenants.yaml` registry and add a new tenant via a form (writes straight into `tenants.yaml`).
+- **Live tenants (last 30 days)** — queries ARC-1/ARC-2 for `contact_center_id`s with login activity in the last 30 days and flags any that aren't yet in `tenants.yaml`.
+
+No login is enforced — keep it on the internal network only. Requires `streamlit` and `ruamel.yaml` (see `requirements.txt`).
+
 ## Documentation
 
 | Doc | Purpose |
