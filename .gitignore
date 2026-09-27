@@ -11,6 +11,11 @@ __pycache__/
 venv/
 .env
 
+# Dashboard: rolling tenants.yaml backups + advisory locks
+tenants_backups/
+*.lock
+.pytest_cache/
+
 # Large offline wheel bundles (rebuild with prepare_usb_bundle.*)
 offline_bundle/
 offline_bundle_old_*/

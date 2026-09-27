@@ -26,13 +26,35 @@ cd /opt/offline_bundle/license-utilization-automation
 ./run_dashboard.sh          # streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0
 ```
 
-Open `http://<server-ip>:8501`. It runs on the same server (same `db_config.yaml`, same DB access as the CLI) and has three tabs:
+Open `http://<server-ip>:8501`. It runs on the same server (same `db_config.yaml`, same DB access as the CLI) and follows the actual monthly billing workflow, tab by tab:
 
-- **Monthly reports** — pick a month, run `run_monthly_from_db.py`, watch the log live, download the resulting `.xlsx` files.
-- **Tenants** — view the current `tenants.yaml` registry and add a new tenant via a form (writes straight into `tenants.yaml`).
-- **Live tenants (last 30 days)** — queries ARC-1/ARC-2 for `contact_center_id`s with login activity in the last 30 days and flags any that aren't yet in `tenants.yaml`.
+1. **New tenants** — scans ARC-1/ARC-2 for `contact_center_id`s active in the last 30 days and flags any not yet in `tenants.yaml`; quick-register one right there.
+2. **Run report** — pick a month/ARC, see exactly which tenants will be included, run `run_monthly_from_db.py` with a live log, download the resulting `.xlsx` files.
+3. **Verify login counts** — cross-checks the utilization workbook's peak counts against the login workbook's peak-hour session counts per tenant/license; these must always agree, so a mismatch here is a real problem, not noise.
+4. **Campaigns** — for tenants billed per-campaign instead of the whole contact center: fetches the live campaign list for a tenant's `contact_center_id` and lets you pick full-tenant vs. specific campaigns, writing straight into `campaign_ids`.
+5. **Tenants registry** — full table, add-tenant form, and a remove action for offboarded customers.
+6. **Run history** — every run triggered from the dashboard, with tenant counts at the time, so month-to-month tenant churn is visible.
 
-No login is enforced — keep it on the internal network only. Requires `streamlit` and `ruamel.yaml` (see `requirements.txt`).
+No login is enforced — keep it on the internal network only. Requires `streamlit`, `ruamel.yaml`, and `pandas` (see `requirements.txt`).
+
+### Reliability notes
+
+The dashboard is split into `dashboard.py` (Streamlit UI only) and `dashboard_core.py` (all business logic, no Streamlit import — unit tested in `tests/`). Things it guards against by design:
+
+- **tenants.yaml races** — every mutation (add/remove/campaign edit) goes through `dashboard_core.mutate_tenants()`: acquire a short advisory lock (`.tenants.yaml.lock`, auto-stolen if the holder crashed and the lock is >30s old) → reload the file fresh → validate → **back up** the pre-mutation file to `tenants_backups/` (last 30 kept) → round-trip-validate the new YAML → **atomically** write it (temp file + rename, so a crash mid-write can't truncate the file every CLI script reads).
+- **Concurrent report runs** — a `.report.lock` in `output/` prevents two dashboard sessions from launching `run_monthly_from_db.py` at the same time (which would race on the same output `.xlsx` filenames). The run is also capped at a wall-clock timeout (default 3h, `TMONE_DASHBOARD_MAX_RUNTIME_SECONDS`) so a hung DB connection can't hang the dashboard forever; the lock has a stuck-process "force clear" escape hatch in the UI, gated behind an explicit confirmation.
+- **psycopg2 aborted-transaction cascades** — a connection is left in an aborted state by Postgres after any failed query until `ROLLBACK`. The scan/verify/campaign-fetch helpers roll back defensively after every query attempt, so one tenant's bad query can't silently break every tenant queried after it on the same connection.
+- **Ad-hoc query hangs** — every dashboard-opened connection gets a `statement_timeout` (default 60s) so a slow/blocked query fails fast instead of freezing the page.
+- **Double-counting risk** — some contact centers intentionally have both a full-tenant entry and campaign-scoped entries (e.g. `AIG_FM` vs. `IGLOO_247`/`BONUSLINK_209` on cc 14). The dashboard surfaces this as an informational heads-up wherever it's relevant, never a hard block.
+
+### Testing
+
+`dashboard_core.py` has a real unit test suite (DB-touching functions are exercised against fakes, never a live DB):
+
+```bash
+pip install -r requirements-dev.txt   # dev-only: adds pytest on top of requirements.txt
+pytest tests/ -v
+```
 
 ## Documentation
 
@@ -95,6 +117,9 @@ db_usage_queries.py      # JRXML-equivalent usage SQL
 db_login_queries.py      # peak-hour login SQL
 tenants.yaml             # tenant registry
 db_config.yaml.example   # DB config template
+dashboard.py             # Streamlit UI (thin — see below)
+dashboard_core.py        # dashboard business logic, no Streamlit import, unit tested
+tests/test_dashboard_core.py  # pytest suite for dashboard_core.py
 HOWTO_USE.md             # full how-to
 ```
 

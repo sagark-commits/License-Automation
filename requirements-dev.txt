@@ -1,0 +1,3 @@
+# Dev/test-only deps — NOT part of the offline server bundle (see requirements.txt).
+-r requirements.txt
+pytest>=7.4
