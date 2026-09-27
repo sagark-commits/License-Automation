@@ -17,6 +17,66 @@ python3.9 run_monthly_from_db.py -m 2026-07
 - `output/Tmone license-Utilaztion_YYYY_MM.xlsx` - Dashboard + Summary + tenant sheets
 - `output/Tmone--Login Count Tmone_Mon_YY.xlsx` - peak-hour login sessions
 
+## Dashboard (web UI)
+
+A browser dashboard wraps the CLI so you don't need the terminal for day-to-day use.
+
+**Recommended: run it as a systemd service** so it survives a crash or a server reboot without anyone needing to notice and manually restart it:
+
+```bash
+cd /opt/offline_bundle/license-utilization-automation
+sudo useradd --system --no-create-home tmone-dashboard   # one-time, or reuse an existing service account
+sudo cp tmone-dashboard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tmone-dashboard
+```
+
+Check it's up / tail its logs:
+
+```bash
+systemctl status tmone-dashboard
+journalctl -u tmone-dashboard -f
+```
+
+**Manual / foreground (development only)** — no restart-on-crash, and `nohup ./run_dashboard.sh &` accumulates an ever-growing `nohup.out` with no rotation:
+
+```bash
+./run_dashboard.sh          # streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0
+```
+
+Open `http://<server-ip>:8501`. It runs on the same server (same `db_config.yaml`, same DB access as the CLI) and follows the actual monthly billing workflow, tab by tab:
+
+1. **New tenants** — scans ARC-1/ARC-2 for `contact_center_id`s active in the last 30 days and flags any not yet in `tenants.yaml`; quick-register one right there.
+2. **Run report** — pick a month/ARC, see exactly which tenants will be included, run `run_monthly_from_db.py` with a live log, download the resulting `.xlsx` files.
+3. **Verify login counts** — cross-checks the utilization workbook's peak counts against the login workbook's peak-hour session counts per tenant/license; these must always agree, so a mismatch here is a real problem, not noise.
+4. **Campaigns** — for tenants billed per-campaign instead of the whole contact center: fetches the live campaign list for a tenant's `contact_center_id` and lets you pick full-tenant vs. specific campaigns, writing straight into `campaign_ids`.
+5. **Tenants registry** — full table, add-tenant form, and a remove action for offboarded customers.
+6. **Run history** — every run triggered from the dashboard, with tenant counts at the time, so month-to-month tenant churn is visible.
+
+No login is enforced — keep it on the internal network only. Requires `streamlit`, `ruamel.yaml`, and `pandas` (see `requirements.txt`).
+
+### Reliability notes
+
+The dashboard is split into `dashboard.py` (Streamlit UI only) and `dashboard_core.py` (all business logic, no Streamlit import — unit tested in `tests/`). This has been through two hardening passes (including an independent multi-angle production review); here's what it guards against and why:
+
+- **tenants.yaml races** — every mutation (add/remove/campaign edit) goes through `dashboard_core.mutate_tenants()`: acquire a short advisory lock (`.tenants.yaml.lock`, auto-stolen if the holder crashed and the lock is >30s old, and *bounded* even if the stale lock can't be deleted — it won't spin forever) → reload the file fresh → validate → **back up** the pre-mutation file to `tenants_backups/` (last 30 kept) → round-trip-validate the new YAML (rejecting anything that wouldn't parse back into a valid `tenants.yaml`, including genuinely malformed YAML, not just wrong structure) → **atomically** write it (temp file + rename, so a crash mid-write can't truncate the file every CLI script reads).
+- **Concurrent report runs** — a `.report.lock` in `output/` prevents two dashboard sessions from launching `run_monthly_from_db.py` at the same time (which would race on the same output `.xlsx` filenames). The lock is released on every exit path, including a `Popen()` that fails outright (e.g. a bad interpreter path) — it never leaks. The run is capped at a wall-clock timeout (default 3h, `TMONE_DASHBOARD_MAX_RUNTIME_SECONDS`, which the lock's own staleness window is *derived from* so the two can't drift apart) that fires even if the child process goes completely silent (stdout read happens on a background thread so the deadline is checked on a fixed cadence, not gated on a line actually arriving); a genuine check-then-acquire race between two sessions surfaces as the same friendly "already running" message either way. A stuck-process "force clear" escape hatch exists in the UI, gated behind an explicit confirmation.
+- **psycopg2 aborted-transaction cascades** — a connection is left in an aborted state by Postgres after any failed query until `ROLLBACK`. Every DB-touching helper (scan/verify/campaign-fetch, and — after the production review caught the same gap in the original CLI — `run_monthly_from_db.py` itself) rolls back defensively after every query attempt, so one tenant's bad query can't silently zero out every tenant queried after it on the same ARC connection.
+- **Corrupt billing workbooks on a killed run** — `write_utilization_workbook`/`write_login_workbook` used to write straight to the final `output/*.xlsx` path, which pandas/openpyxl truncate to 0 bytes for the whole duration of the write; a kill mid-write left a corrupt file at the exact name an operator would download and forward for billing. Both now write to a temp file and atomically rename only on success.
+- **Ad-hoc query hangs** — every dashboard-opened connection gets a `statement_timeout` (default 60s) so a slow/blocked query fails fast instead of freezing the page.
+- **Arbitrary execution** — an earlier version let you type any local path into a "Server Python binary" field, which a no-auth dashboard would let any network-reachable user turn into "make the server exec an arbitrary local program." It's gone; the report subprocess now always uses `sys.executable` (the same interpreter the dashboard itself is already running under).
+- **Double-counting risk** — some contact centers intentionally have both a full-tenant entry and campaign-scoped entries (e.g. `AIG_FM` vs. `IGLOO_247`/`BONUSLINK_209` on cc 14). The dashboard surfaces this as an informational heads-up wherever it's relevant, never a hard block.
+- **Process supervision** — see the systemd unit above (`deploy/tmone-dashboard.service`); a bare `nohup ./run_dashboard.sh &` has no restart-on-crash/reboot and no log rotation.
+
+### Testing
+
+`dashboard_core.py` has a real unit test suite (DB-touching functions are exercised against fakes, never a live DB):
+
+```bash
+pip install -r requirements-dev.txt   # dev-only: adds pytest on top of requirements.txt
+pytest tests/ -v
+```
+
 ## Documentation
 
 | Doc | Purpose |
@@ -78,6 +138,11 @@ db_usage_queries.py      # JRXML-equivalent usage SQL
 db_login_queries.py      # peak-hour login SQL
 tenants.yaml             # tenant registry
 db_config.yaml.example   # DB config template
+dashboard.py             # Streamlit UI (thin — see below)
+dashboard_core.py        # dashboard business logic, no Streamlit import, unit tested
+tmone-dashboard.service  # systemd unit (restart-on-crash/reboot) — see Dashboard section
+tests/test_dashboard_core.py  # pytest suite for dashboard_core.py
+tests/test_atomic_excel_write.py  # pytest suite for the atomic .xlsx write helper
 HOWTO_USE.md             # full how-to
 ```
 
