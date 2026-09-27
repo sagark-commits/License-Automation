@@ -33,6 +33,19 @@ def parse_args():
     p.add_argument("--db-port", type=int, default=5432)
     return p.parse_args()
 
+def _safe_rollback(conn) -> None:
+    """Postgres aborts a connection's whole transaction after any failed
+    statement until ROLLBACK -- and every tenant on a given ARC shares one
+    connection here (see connection_for_arc). Without this, one tenant's bad
+    query (schema drift, a transient network blip, malformed campaign_ids)
+    would silently zero out every tenant queried after it on the same ARC
+    for the rest of this run."""
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+
 def _print_connection_plan(script_dir, arc_filter):
     cfg = load_db_config(script_dir)
     arcs = cfg.get("arc_databases") or {}
@@ -93,6 +106,7 @@ def main():
                 TenantData=TenantData, compute_peaks=compute_peaks,
                 LicensePeak=LicensePeak, normalize_month=normalize_month,
             )
+            _safe_rollback(conn)  # clear any aborted transaction before the next tenant on this ARC
             if td is None:
                 td = TenantData(key=key, cfg=cfg, usage_df=pd.DataFrame())
                 print("WARN: %s (%s): no usage data for %s" % (key, arc, args.month), file=sys.stderr)
@@ -123,9 +137,15 @@ def main():
                 continue
             try:
                 conn = connection_for_arc(login_conns, td.cfg.get("arc", "ARC-1"))
+            except Exception as exc:
+                print("WARN: login %s: %s" % (td.key, exc), file=sys.stderr)
+                continue
+            try:
                 fetch_login_sessions(conn, td, config)
             except Exception as exc:
                 print("WARN: login %s: %s" % (td.key, exc), file=sys.stderr)
+            finally:
+                _safe_rollback(conn)  # same reason as above -- one tenant's failure must not poison the rest
     finally:
         close_connection_pools(db_pools)
     args.output_dir.mkdir(parents=True, exist_ok=True)

@@ -25,6 +25,7 @@ No login is enforced — keep this bound to the internal network only.
 """
 from __future__ import annotations
 
+import sys
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -37,7 +38,7 @@ st.title("TMONE License Utilization Dashboard")
 st.caption("ARC-1 (Ameyo VPC) + ARC-2 (Ameyo BPO) — monthly license billing workflow")
 
 with st.sidebar:
-    st.text_input("Server Python binary", value="python3.9", key="python_bin")
+    st.caption(f"Report runner: `{sys.executable}` (the interpreter this dashboard itself is running under)")
     if not core.DB_CONFIG_PATH.exists():
         st.error("db_config.yaml not found — copy db_config.yaml.example and set credentials.")
     else:
@@ -54,10 +55,6 @@ with st.sidebar:
         pending = [r for r in st.session_state["new_tenants_scan"] if r["status"] == "new"]
         if pending:
             st.warning(f"{len(pending)} unregistered contact center(s) found in last scan.")
-
-
-def python_bin() -> str:
-    return (st.session_state.get("python_bin") or "").strip() or "python3.9"
 
 
 tab_new, tab_reports, tab_verify, tab_campaigns, tab_tenants, tab_history = st.tabs(
@@ -108,10 +105,21 @@ with tab_new:
             choice = st.selectbox("Pick a detected contact center", options, key="quick_pick")
             picked = new_rows[options.index(choice)]
 
+            # The tenant-key field below is stateful (key="quick_add_key_input")
+            # so a manually-typed value survives reruns. It's only reset to the
+            # auto-generated suggestion when the OPERATOR deliberately changes
+            # the picked contact center — not on every rerun a bare value=
+            # would cause, which used to silently discard a typed key the
+            # moment anything else on the page reran.
+            picked_id = f"{picked['arc']}::{picked['contact_center_id']}"
+            if st.session_state.get("_quick_add_last_pick") != picked_id:
+                st.session_state["_quick_add_last_pick"] = picked_id
+                st.session_state["quick_add_key_input"] = f"NEW_CC{picked['contact_center_id']}"
+
             with st.form("quick_add_form"):
                 c1, c2 = st.columns(2)
                 with c1:
-                    key = st.text_input("Tenant key (unique)", value=f"NEW_CC{picked['contact_center_id']}").strip().upper()
+                    key = st.text_input("Tenant key (unique)", key="quick_add_key_input").strip().upper()
                     sheet_name = st.text_input("sheet_name (Excel tab name)", value=key)
                 with c2:
                     project_name = st.text_input("project_name", value=key)
@@ -194,7 +202,7 @@ with tab_reports:
                 st.success("Lock cleared. Reload the page.")
 
     if st.button("Run report", type="primary", disabled=run_disabled):
-        cmd = [python_bin(), "run_monthly_from_db.py", "-m", month_str]
+        cmd = [sys.executable, "run_monthly_from_db.py", "-m", month_str]
         if arc_choice != "Both":
             cmd += ["--arc", arc_choice]
         if active_only:
@@ -248,9 +256,18 @@ with tab_reports:
     st.subheader("Existing report files")
     if lock:
         st.caption("A run is in progress — this list may include a file still being written.")
-    files = core.list_output_files()
-    if not files:
+    all_files = core.list_output_files()
+    # Every widget interaction anywhere on the page reruns this whole script,
+    # which would otherwise re-read the full bytes of EVERY historical report
+    # into memory on every click, growing without bound as reports accumulate
+    # (output/ has no retention policy). Cap what's eagerly read/listed here;
+    # older files stay on disk and are still reachable directly on the server.
+    MAX_LISTED_FILES = 20
+    files = all_files[:MAX_LISTED_FILES]
+    if not all_files:
         st.info("No report files in output/ yet.")
+    elif len(all_files) > MAX_LISTED_FILES:
+        st.caption(f"Showing the {MAX_LISTED_FILES} most recent of {len(all_files)} files in output/.")
     for f in files:
         mtime = datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
         c1, c2 = st.columns([4, 1])

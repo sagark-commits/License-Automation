@@ -5,7 +5,10 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import contextlib
+import os
 import sys
+import tempfile
 
 if sys.version_info < (3, 8):
     sys.exit("ERROR: Python 3.8+ required. Use: python3 tmone_report.py")
@@ -402,15 +405,37 @@ def fetch_login_sessions(conn, td: TenantData, config: dict[str, Any]) -> None:
         )
 
 
+@contextlib.contextmanager
+def _atomic_excel_path(path: Path):
+    """Yields a temp path in the same directory to write the workbook to;
+    only replaces `path` on success. A crash/kill mid-write (server reboot,
+    the dashboard's report-run timeout, an operator killing a stuck process)
+    must never leave a truncated/corrupt .xlsx sitting at the exact filename
+    an operator would otherwise download and forward for billing."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        yield tmp_path
+        os.replace(tmp_path, path)  # atomic on POSIX and Windows
+    except BaseException:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def write_utilization_workbook(path: Path, tenants_data: list[TenantData], month: str, config: dict[str, Any]) -> None:
     from excel_format import format_utilization_workbook
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        build_summary_sheet(tenants_data, month, config).to_excel(writer, sheet_name="Summary", index=False, header=False)
-        for td in tenants_data:
-            build_tenant_sheet(td, config).to_excel(writer, sheet_name=str(td.cfg.get("sheet_name", td.key))[:31], index=False, header=False)
-        format_utilization_workbook(writer.book, normalize_month(month), tenants_data, config)
+    with _atomic_excel_path(path) as tmp_path:
+        with pd.ExcelWriter(tmp_path, engine="openpyxl") as writer:
+            build_summary_sheet(tenants_data, month, config).to_excel(writer, sheet_name="Summary", index=False, header=False)
+            for td in tenants_data:
+                build_tenant_sheet(td, config).to_excel(writer, sheet_name=str(td.cfg.get("sheet_name", td.key))[:31], index=False, header=False)
+            format_utilization_workbook(writer.book, normalize_month(month), tenants_data, config)
 
 
 

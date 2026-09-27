@@ -149,6 +149,29 @@ class TestFileLock:
         contender.acquire()  # should succeed once the other thread releases
         contender.release()
 
+    def test_stale_lock_that_cannot_be_unlinked_does_not_spin_forever(self, tmp_path, monkeypatch):
+        """If a stale lock exists but unlink() keeps failing (permissions, an
+        AV/indexer holding it open, an NFS quirk), acquire() must still hit
+        its deadline and raise — not spin at 100% CPU forever re-checking the
+        same un-removable file with no sleep between attempts."""
+        lock_path = tmp_path / "x.lock"
+        lock_path.write_text(json.dumps({"pid": 1, "acquired_at": time.time() - 3600}), encoding="utf-8")
+
+        real_unlink = Path.unlink
+
+        def _always_fail_unlink(self, *a, **k):
+            if self == lock_path:
+                raise OSError("permission denied")
+            return real_unlink(self, *a, **k)
+
+        monkeypatch.setattr(Path, "unlink", _always_fail_unlink)
+        contender = core.FileLock(lock_path, stale_after=30, wait_timeout=1, poll_interval=0.05)
+        start = time.monotonic()
+        with pytest.raises(core.LockTimeoutError):
+            contender.acquire()
+        elapsed = time.monotonic() - start
+        assert elapsed < 3, f"acquire() took {elapsed:.2f}s to give up — looks like it was spinning"
+
 
 # ---------------------------------------------------------------------------
 # tenants.yaml mutations
@@ -207,12 +230,53 @@ class TestTenantMutations:
             core.set_tenant_campaigns("GHOST", ["1"])
 
     def test_concurrent_adds_do_not_lose_either_write(self, isolated_paths):
-        """Two 'sessions' adding different tenants back-to-back must both land —
-        this is the lost-update race a naive load/modify/save would hit."""
-        core.add_tenant("ONE", {"arc": "ARC-1", "project_name": "1", "sheet_name": "1", "contact_center_id": 101})
-        core.add_tenant("TWO", {"arc": "ARC-1", "project_name": "2", "sheet_name": "2", "contact_center_id": 102})
+        """Two REAL threads racing to add different tenants at (as close to)
+        the same instant as possible must both land — this is the lost-update
+        race a naive load/modify/save would hit. A prior version of this test
+        called add_tenant() twice back-to-back on one thread, which can never
+        interleave and would pass even with locking removed entirely."""
+        barrier = threading.Barrier(2)
+        errors: list[Exception] = []
+
+        def _add(key: str, cc: int) -> None:
+            barrier.wait(timeout=5)  # line both threads up before either mutates
+            try:
+                core.add_tenant(key, {"arc": "ARC-1", "project_name": key, "sheet_name": key, "contact_center_id": cc})
+            except Exception as exc:  # pragma: no cover - surfaced via `errors`
+                errors.append(exc)
+
+        t1 = threading.Thread(target=_add, args=("ONE", 101))
+        t2 = threading.Thread(target=_add, args=("TWO", 102))
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        assert not errors, f"add_tenant raised under concurrency: {errors}"
         plain = core.load_tenants_plain()
         assert "ONE" in plain["tenants"] and "TWO" in plain["tenants"]
+
+    def test_mutate_tenants_rejects_non_roundtripping_yaml_and_writes_nothing(self, isolated_paths, monkeypatch):
+        """The round-trip guard (dump -> yaml.safe_load -> must be a dict with
+        'tenants') is the last line of defense against writing something the
+        CLI billing scripts can't parse. Force it to fail and confirm it
+        actually raises AND leaves the file/backups untouched, rather than
+        writing anyway."""
+        monkeypatch.setattr(core, "_dump_yaml_to_string", lambda data: "not: [valid, {yaml")
+        before = core.TENANTS_PATH.read_text(encoding="utf-8")
+
+        with pytest.raises(core.TenantValidationError):
+            core.add_tenant("NEWCO", {"arc": "ARC-1", "project_name": "N", "sheet_name": "N", "contact_center_id": 99})
+
+        assert core.TENANTS_PATH.read_text(encoding="utf-8") == before
+        assert not core.TENANTS_BACKUP_DIR.exists()
+
+    def test_backup_pruning_caps_at_max_tenant_backups(self, isolated_paths, monkeypatch):
+        monkeypatch.setattr(core, "MAX_TENANT_BACKUPS", 3)
+        for i in range(6):
+            core.add_tenant(f"T{i}", {"arc": "ARC-1", "project_name": "x", "sheet_name": "x", "contact_center_id": 200 + i})
+        backups = list(core.TENANTS_BACKUP_DIR.glob("tenants_*.yaml"))
+        assert len(backups) == 3, f"expected pruning to cap backups at 3, found {len(backups)}"
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +372,58 @@ class TestReportLockAndSubprocess:
         assert any("exceeded" in line for line in result.lines)
         assert not core.REPORT_LOCK_PATH.exists()  # lock released even after a kill
 
+    def test_run_report_subprocess_kills_completely_silent_child(self, isolated_paths):
+        """A child that produces ZERO stdout output (no print at all) must
+        still be detected and killed by the wall-clock timeout. This is the
+        exact gap the review found: the old implementation only checked the
+        deadline inside `for line in proc.stdout:`, so a silent child could
+        never be caught regardless of timeout_seconds."""
+        cmd = [sys.executable, "-u", "-c", "import time; time.sleep(30)"]
+        start = time.monotonic()
+        result = core.run_report_subprocess(cmd, cwd=isolated_paths, timeout_seconds=1, poll_interval=0.2)
+        elapsed = time.monotonic() - start
+        assert result.timed_out is True
+        assert elapsed < 10, f"took {elapsed:.1f}s to kill a silent child with a 1s timeout"
+        assert not core.REPORT_LOCK_PATH.exists()
+
+    def test_run_report_subprocess_releases_lock_even_if_popen_itself_fails(self, isolated_paths):
+        """Critical finding: subprocess.Popen(cmd, ...) used to run BEFORE the
+        try/finally that releases the lock, so an interpreter path that
+        doesn't exist (e.g. a mistyped 'Server Python binary' field) would
+        leak .report.lock for the full stale window instead of releasing it."""
+        cmd = ["this-binary-definitely-does-not-exist-12345", "-c", "pass"]
+        with pytest.raises(OSError):
+            core.run_report_subprocess(cmd, cwd=isolated_paths, timeout_seconds=5)
+        assert not core.REPORT_LOCK_PATH.exists(), "lock leaked after a failed Popen()"
+
+    def test_run_report_subprocess_check_then_acquire_race_raises_already_running(self, isolated_paths, monkeypatch):
+        """TOCTOU: report_lock_status() can say 'free' and then lock.acquire()
+        can still lose the race to a concurrent caller. That must surface as
+        ReportAlreadyRunningError (which dashboard.py catches), not the
+        sibling LockTimeoutError (which it doesn't)."""
+        monkeypatch.setattr(core, "report_lock_status", lambda: None)  # pretend it's free
+        core.REPORT_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        core.REPORT_LOCK_PATH.write_text(json.dumps({"pid": 1, "acquired_at": time.time()}), encoding="utf-8")
+
+        with pytest.raises(core.ReportAlreadyRunningError):
+            core.run_report_subprocess([sys.executable, "-c", "pass"], cwd=isolated_paths)
+
+    def test_run_report_subprocess_merges_lock_meta(self, isolated_paths):
+        seen_meta = {}
+
+        def _on_line(line):
+            if not seen_meta:
+                try:
+                    seen_meta.update(json.loads(core.REPORT_LOCK_PATH.read_text(encoding="utf-8")))
+                except (OSError, json.JSONDecodeError):
+                    pass
+
+        cmd = [sys.executable, "-u", "-c", "print('x')"]
+        core.run_report_subprocess(cmd, cwd=isolated_paths, on_line=_on_line, lock_meta={"month": "2026-07", "arc": "Both"})
+        assert seen_meta.get("month") == "2026-07"
+        assert seen_meta.get("arc") == "Both"
+        assert "pid" in seen_meta  # original acquire() metadata preserved by the merge
+
 
 # ---------------------------------------------------------------------------
 # misc
@@ -327,6 +443,29 @@ class TestMisc:
         core.DB_CONFIG_PATH.write_text("enabled: true", encoding="utf-8")
         core.DB_CONFIG_PATH.chmod(0o644)
         assert core.check_db_config_permissions() is not None
+
+    def test_check_db_config_permissions_warning_logic_is_os_independent(self, isolated_paths, monkeypatch):
+        """The real warning-generation logic (mode & 0o077) is only ever
+        exercised by test_check_db_config_permissions_warns_when_open, which
+        is skipped on non-POSIX hosts (including this Windows dev box) — so
+        a Windows-only CI run could show '38/39 passed' while this credential-
+        exposure check never actually ran. Fake POSIX mode bits so the branch
+        is verified regardless of host OS."""
+        core.DB_CONFIG_PATH.write_text("enabled: true", encoding="utf-8")
+        monkeypatch.setattr(core.os, "name", "posix")
+
+        class _FakeStatWorldReadable:
+            st_mode = 0o100644  # regular file, rw-r--r--
+
+        class _FakeStatOwnerOnly:
+            st_mode = 0o100600  # regular file, rw-------
+
+        monkeypatch.setattr(Path, "stat", lambda self: _FakeStatWorldReadable())
+        warning = core.check_db_config_permissions()
+        assert warning is not None and "chmod 600" in warning
+
+        monkeypatch.setattr(Path, "stat", lambda self: _FakeStatOwnerOnly())
+        assert core.check_db_config_permissions() is None
 
 
 # ---------------------------------------------------------------------------
@@ -354,15 +493,30 @@ class FakeCursor:
 
 
 class FakeConnection:
+    """Models real psycopg2 closely enough to catch a missing rollback: once
+    a statement raises, the connection is 'aborted' and every subsequent
+    execute() raises InFailedSqlTransaction-like errors until rollback()
+    is called — exactly like a real Postgres connection. A fake that just
+    kept answering from `rules` regardless of prior failures would let a
+    missing _safe_rollback() call pass tests while failing against a real DB."""
+
+    class AbortedTransaction(RuntimeError):
+        pass
+
     def __init__(self, rules: list[tuple[str, object]]):
         self.rules = rules  # (substring, rows-or-Exception), first match wins
         self.executed: list[str] = []
         self.rollback_calls = 0
         self.commit_calls = 0
+        self._aborted = False
 
     def responses_for(self, sql):
+        if self._aborted:
+            return self.AbortedTransaction("current transaction is aborted, commands ignored until end of transaction block")
         for substring, result in self.rules:
             if substring in sql:
+                if isinstance(result, Exception):
+                    self._aborted = True
                 return result
         return []
 
@@ -371,6 +525,7 @@ class FakeConnection:
 
     def rollback(self):
         self.rollback_calls += 1
+        self._aborted = False
 
     def commit(self):
         self.commit_calls += 1
@@ -438,7 +593,7 @@ class TestFetchCampaignsForCc:
 
 
 class TestVerifyLoginCounts:
-    def test_match_and_mismatch_rows(self, isolated_paths, monkeypatch):
+    def test_mismatch_row(self, isolated_paths, monkeypatch):
         cfg = {"arc": "ARC-1", "login_sheets": {"agent": "SheetA"}}
         monkeypatch.setattr(core, "iter_tenants_for_db", lambda config, keys, arc_filter, active_only: iter([("TESTCO", cfg)]))
         monkeypatch.setattr(core, "connect_login_databases", lambda args, script_dir: {"login": {"ARC-1": FakeConnection([])}})
@@ -459,3 +614,30 @@ class TestVerifyLoginCounts:
         assert rows[0]["utilization_peak_count"] == 5
         assert rows[0]["login_session_users"] == 4
         assert rows[0]["match"] is False
+
+    def test_match_row(self, isolated_paths, monkeypatch):
+        """A regression that broke the comparison (e.g. flipping `==` to `!=`,
+        or hardcoding False) would still pass test_mismatch_row above, since
+        4 != 5 either way — this is the only test that requires `match` to
+        ever come back True, so it's the one that actually exercises the
+        happy path of the billing cross-check."""
+        cfg = {"arc": "ARC-1", "login_sheets": {"agent": "SheetA"}}
+        monkeypatch.setattr(core, "iter_tenants_for_db", lambda config, keys, arc_filter, active_only: iter([("TESTCO", cfg)]))
+        monkeypatch.setattr(core, "connect_login_databases", lambda args, script_dir: {"login": {"ARC-1": FakeConnection([])}})
+        monkeypatch.setattr(core, "connection_for_arc", lambda conns, arc: conns[arc])
+        monkeypatch.setattr(core, "close_connection_pools", lambda pools: None)
+
+        td = TenantData(key="TESTCO", cfg=cfg, usage_df=pd.DataFrame())
+        td.peaks = {"agent": LicensePeak(license_key="agent", license_label="Agent", peak_date="2026-07-15", peak_count=4, peak_hour=14)}
+
+        def _fake_fetch_login_sessions(conn, td_arg, config):
+            td_arg.login_sessions["SheetA"] = pd.DataFrame({"user_id": ["u1", "u2", "u3", "u4"]})  # 4, peak also 4
+
+        monkeypatch.setattr(core, "build_tenant_data_from_db", lambda *a, **k: td)
+        monkeypatch.setattr(core, "fetch_login_sessions", _fake_fetch_login_sessions)
+
+        rows = core.verify_login_counts("2026-07", "Both", False)
+        assert len(rows) == 1
+        assert rows[0]["utilization_peak_count"] == 4
+        assert rows[0]["login_session_users"] == 4
+        assert rows[0]["match"] is True

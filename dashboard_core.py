@@ -21,14 +21,17 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import socket
+import subprocess
 import tempfile
+import threading
 import time
 from argparse import Namespace
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 import yaml
 from ruamel.yaml import YAML
@@ -59,8 +62,11 @@ ARC_CHOICES = ["ARC-1", "ARC-2"]
 
 MAX_TENANT_BACKUPS = 30
 TENANTS_LOCK_STALE_SECONDS = 30          # short critical section: add/remove/campaign edit
-REPORT_LOCK_STALE_SECONDS = 3 * 3600 + 300  # must exceed MAX_REPORT_RUNTIME_SECONDS below
 MAX_REPORT_RUNTIME_SECONDS = int(os.environ.get("TMONE_DASHBOARD_MAX_RUNTIME_SECONDS", 3 * 3600))
+# Derived from MAX_REPORT_RUNTIME_SECONDS (not a fixed literal) so raising the
+# runtime env var can never leave the lock going stale — and get stolen out
+# from under a still-running report — before the run's own timeout would fire.
+REPORT_LOCK_STALE_SECONDS = MAX_REPORT_RUNTIME_SECONDS + 300
 DEFAULT_STATEMENT_TIMEOUT_MS = 60_000  # per-query cap for ad-hoc dashboard SQL only
 
 _ryaml = YAML()
@@ -141,7 +147,11 @@ class FileLock:
                         self.path.unlink()
                     except OSError:
                         pass
-                    continue
+                    else:
+                        continue  # stole it — retry os.open() immediately
+                    # Stale but couldn't remove it (permissions, AV/indexer
+                    # holding it open, NFS oddity): fall through to the
+                    # deadline check below instead of spinning forever.
                 if time.monotonic() >= deadline:
                     raise LockTimeoutError(
                         f"Could not acquire lock {self.path} — another dashboard action is using it. "
@@ -156,6 +166,28 @@ class FileLock:
             except OSError:
                 pass
             self._held = False
+
+    def status(self) -> dict[str, Any] | None:
+        """Public read-only check: None if the lock is absent or stale,
+        otherwise its metadata. If the file is present and NOT stale but its
+        metadata is transiently unreadable (e.g. another process is mid-write
+        to it), this reports a synthetic "held" entry instead of silently
+        treating an unreadable-but-fresh lock as free — the two checks
+        (existence/staleness vs. metadata parse) are not atomic with each
+        other, so a naive "unreadable == free" would let a second caller
+        steal a lock that is genuinely still held."""
+        if not self.path.exists():
+            return None
+        if self._is_stale():
+            return None
+        meta = self._read_meta()
+        if meta is not None:
+            return meta
+        try:
+            mtime = self.path.stat().st_mtime
+        except OSError:
+            return None
+        return {"pid": None, "host": None, "acquired_at": mtime}
 
     def __enter__(self) -> "FileLock":
         self.acquire()
@@ -267,9 +299,14 @@ def mutate_tenants(mutator: Callable[[dict[str, Any]], None]) -> dict[str, Any]:
         raw = load_tenants_raw()
         mutator(raw)
         rendered = _dump_yaml_to_string(raw)
-        # Round-trip check: fail loudly here rather than write something the
-        # CLI scripts (plain yaml.safe_load) can't parse.
-        reparsed = yaml.safe_load(rendered)
+        # Round-trip check: fail loudly here (as a TenantValidationError the
+        # UI already knows how to catch) rather than write something the CLI
+        # scripts (plain yaml.safe_load) can't parse, or leak a raw
+        # yaml.YAMLError past the callers' except clauses.
+        try:
+            reparsed = yaml.safe_load(rendered)
+        except yaml.YAMLError as exc:
+            raise TenantValidationError(f"Refusing to save — result is not valid YAML: {exc}") from exc
         if not isinstance(reparsed, dict) or "tenants" not in reparsed:
             raise TenantValidationError("Refusing to save — result would not be valid tenants.yaml.")
         _backup_tenants_file()
@@ -564,11 +601,7 @@ def fetch_campaigns_for_cc(arc: str, cc_id: int) -> list[dict[str, Any]]:
 def report_lock_status() -> dict[str, Any] | None:
     """Current holder of the report-run lock, or None if free (or stale)."""
     lock = FileLock(REPORT_LOCK_PATH, stale_after=REPORT_LOCK_STALE_SECONDS, wait_timeout=0)
-    if not REPORT_LOCK_PATH.exists():
-        return None
-    if lock._is_stale():
-        return None
-    return lock._read_meta()
+    return lock.status()
 
 
 def force_clear_report_lock() -> None:
@@ -594,19 +627,32 @@ def list_output_files() -> list[Path]:
     return sorted(OUTPUT_DIR.glob("*.xlsx"), key=lambda p: p.stat().st_mtime, reverse=True)
 
 
+def _stream_reader(stream: Any, out_queue: "queue.Queue[str | None]") -> None:
+    """Runs on a background thread: pushes lines as they arrive, then a
+    single None sentinel at EOF. Isolates the (blocking) pipe read from the
+    timeout-checking loop below, so the wall-clock deadline is evaluated on a
+    fixed cadence even if the child produces no output at all."""
+    try:
+        for line in stream:
+            out_queue.put(line)
+    finally:
+        out_queue.put(None)
+
+
 def run_report_subprocess(
     cmd: list[str],
     cwd: Path,
     on_line: Callable[[str], None] | None = None,
     timeout_seconds: int = MAX_REPORT_RUNTIME_SECONDS,
     lock_meta: dict[str, Any] | None = None,
+    poll_interval: float = 1.0,
 ) -> SubprocessResult:
     """Run run_monthly_from_db.py under the report lock, streaming lines to
     `on_line`, with a hard wall-clock cap so a stuck DB connection can't hang
-    the dashboard forever. Raises ReportAlreadyRunningError if another run
-    holds the lock."""
-    import subprocess
-
+    the dashboard forever — even if the child goes completely silent (no
+    stdout at all), since the timeout is checked on a fixed cadence via a
+    background reader thread, not gated on a line actually arriving. Raises
+    ReportAlreadyRunningError if another run holds the lock."""
     existing = report_lock_status()
     if existing is not None:
         raise ReportAlreadyRunningError(
@@ -614,30 +660,54 @@ def run_report_subprocess(
             f"{existing.get('host')}, started {existing.get('acquired_at')})."
         )
 
-    lock = FileLock(REPORT_LOCK_PATH, stale_after=REPORT_LOCK_STALE_SECONDS, wait_timeout=0)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    lock.acquire()
-    if lock_meta:
-        try:
-            REPORT_LOCK_PATH.write_text(
-                json.dumps({**json.loads(REPORT_LOCK_PATH.read_text(encoding="utf-8")), **lock_meta}),
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
+    lock = FileLock(REPORT_LOCK_PATH, stale_after=REPORT_LOCK_STALE_SECONDS, wait_timeout=0)
+    try:
+        lock.acquire()
+    except LockTimeoutError as exc:
+        # Check-then-acquire race with another caller between the
+        # report_lock_status() check above and here — surface it as the same
+        # "already running" error the caller already knows how to handle,
+        # not a sibling exception type it doesn't catch.
+        raise ReportAlreadyRunningError(str(exc)) from exc
 
     lines: list[str] = []
     timed_out = False
-    proc = subprocess.Popen(
-        cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-    )
-    start = time.monotonic()
+    proc: subprocess.Popen | None = None
     try:
+        if lock_meta:
+            # Best-effort metadata enrichment only — never let a bad lock_meta
+            # value (unwritable disk, non-JSON-serializable field) abort the
+            # run; the lock is still held/released correctly either way.
+            try:
+                current = json.loads(REPORT_LOCK_PATH.read_text(encoding="utf-8"))
+                _atomic_write_text(REPORT_LOCK_PATH, json.dumps({**current, **lock_meta}))
+            except Exception:
+                pass
+
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        proc = subprocess.Popen(
+            cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, env=env,
+        )
+        start = time.monotonic()
         assert proc.stdout is not None
-        for line in proc.stdout:
-            lines.append(line.rstrip("\n"))
-            if on_line:
-                on_line(lines[-1])
+        line_queue: "queue.Queue[str | None]" = queue.Queue()
+        reader = threading.Thread(target=_stream_reader, args=(proc.stdout, line_queue), daemon=True)
+        reader.start()
+
+        while True:
+            try:
+                line = line_queue.get(timeout=poll_interval)
+            except queue.Empty:
+                pass  # no output yet this tick — still fall through to the timeout check below
+            else:
+                if line is None:  # EOF sentinel from the reader thread
+                    break
+                lines.append(line.rstrip("\n"))
+                if on_line:
+                    on_line(lines[-1])
+
             if time.monotonic() - start > timeout_seconds:
                 timed_out = True
                 proc.kill()
@@ -645,12 +715,19 @@ def run_report_subprocess(
                 if on_line:
                     on_line(lines[-1])
                 break
-        proc.wait(timeout=30)
+
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            lines.append("ERROR: process did not exit within 30s of being killed.")
+            if on_line:
+                on_line(lines[-1])
     finally:
-        if proc.poll() is None:
+        if proc is not None and proc.poll() is None:
             proc.kill()
         lock.release()
-    return SubprocessResult(returncode=proc.returncode, timed_out=timed_out, lines=lines)
+    return SubprocessResult(returncode=proc.returncode if proc is not None else None, timed_out=timed_out, lines=lines)
 
 
 def check_db_config_permissions() -> str | None:

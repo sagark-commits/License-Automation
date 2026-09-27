@@ -77,7 +77,7 @@ docker rm -f "$CID" >/dev/null
 for f in tmone_report.py tmone_report_main.py db_connections.py tmone_db_mode.py \
          db_usage_queries.py excel_format.py tenants.yaml requirements.txt \
          db_config.yaml.example run_from_db.sh install_offline.sh \
-         dashboard.py dashboard_core.py run_dashboard.sh run_dashboard.bat; do
+         dashboard.py dashboard_core.py run_dashboard.sh run_dashboard.bat tmone-dashboard.service; do
   [[ -f "$ROOT/$f" ]] && cp "$ROOT/$f" "$APP/"
 done
 cp "$ROOT/install_offline.sh" "$BUNDLE/"

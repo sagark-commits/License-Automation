@@ -1,0 +1,18 @@
+[Unit]
+Description=TMONE License Utilization Dashboard (Streamlit)
+After=network.target
+
+[Service]
+Type=simple
+User=tmone-dashboard
+WorkingDirectory=/opt/offline_bundle/license-utilization-automation
+ExecStart=/usr/bin/python3.9 -m streamlit run dashboard.py --server.port 8501 --server.address 0.0.0.0 --server.headless true
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tmone-dashboard
+
+[Install]
+WantedBy=multi-user.target

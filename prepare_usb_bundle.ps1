@@ -68,7 +68,7 @@ $AppFiles = @(
     "login_export.py", "csv_login.py", "excel_format.py",
     "tenants.yaml", "requirements.txt", "db_config.yaml.example", "run_config.yaml",
     "run_from_db.sh", "run_from_db.bat", "run_monthly.bat",
-    "dashboard.py", "dashboard_core.py", "run_dashboard.sh", "run_dashboard.bat",
+    "dashboard.py", "dashboard_core.py", "run_dashboard.sh", "run_dashboard.bat", "tmone-dashboard.service",
     "HOWTO_USE.md", "HOWTO_USE.txt", "HOWTO_DUAL_ARC_DB.txt",
     "OFFLINE_INSTALL.md", "OFFLINE_INSTALL.txt", "README.md",
     "fix_utf8_encoding.sh"
