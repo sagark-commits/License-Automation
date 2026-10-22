@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import sys
+import logging
 from typing import Any
 
 import pandas as pd
@@ -10,6 +10,8 @@ import pandas as pd
 from db_usage_queries import month_interval, tenant_wants_wallboard, usage_query
 
 HOUR_COLUMNS = [f"Count at {h} hour" for h in range(1, 25)]
+
+log = logging.getLogger("tmone")
 
 
 def normalize_usage_dataframe(df: pd.DataFrame, month: str | None, normalize_month) -> pd.DataFrame:
@@ -30,9 +32,9 @@ def normalize_usage_dataframe(df: pd.DataFrame, month: str | None, normalize_mon
     return out
 
 
-def fetch_usage_from_db(conn, tenant_cfg: dict[str, Any], month: str, normalize_month) -> tuple[pd.DataFrame, pd.DataFrame | None]:
+def fetch_usage_from_db(conn, tenant_cfg: dict[str, Any], month: str, normalize_month, config: dict[str, Any] | None = None) -> tuple[pd.DataFrame, pd.DataFrame | None]:
     start, end = month_interval(normalize_month(month))
-    sql, params = usage_query(tenant_cfg, start, end, wallboard=False)
+    sql, params = usage_query(tenant_cfg, start, end, wallboard=False, config=config)
     usage_df = normalize_usage_dataframe(pd.read_sql(sql, conn, params=params), month, normalize_month)
 
     wallboard_df = None
@@ -44,10 +46,18 @@ def fetch_usage_from_db(conn, tenant_cfg: dict[str, Any], month: str, normalize_
 
 
 def apply_wallboard_peaks(td, wallboard_df: pd.DataFrame | None, config: dict[str, Any], compute_peaks, LicensePeak) -> None:
+    """Wallboard peak from the wallboard usage query.
+
+    Every row that query returns IS a wallboard user by definition (it filters on the wallboard
+    user_id rule), so the rows are forced into the wallboard bucket regardless of the Ameyo
+    user_type stored for that user (some tenants type their wallboard login as Supervisor).
+    """
     if wallboard_df is None or wallboard_df.empty:
         return
-    wb = compute_peaks(wallboard_df, config, td.cfg)
-    src = wb.get("wallboard") or wb.get("agent")
+    forced = wallboard_df.copy()
+    forced["user_type"] = "Wallboard"
+    wb = compute_peaks(forced, config, td.cfg)
+    src = wb.get("wallboard")
     if src and src.daily_counts:
         from user_type_config import resolve_display_label
 
@@ -72,11 +82,19 @@ def build_tenant_data_from_db(
     compute_peaks,
     LicensePeak,
     normalize_month,
+    errors: list[str] | None = None,
 ) -> Any | None:
+    """Fetch one tenant's usage and compute its peaks.
+
+    Returns None when the query fails (reason appended to ``errors``) or the tenant has no usage.
+    """
     try:
-        usage_df, wallboard_df = fetch_usage_from_db(conn, cfg, month, normalize_month)
+        usage_df, wallboard_df = fetch_usage_from_db(conn, cfg, month, normalize_month, config)
     except Exception as exc:
-        print(f"WARN: DB usage fetch failed for {key}: {exc}", file=sys.stderr)
+        msg = "usage query failed: %s" % str(exc).strip().splitlines()[0]
+        log.warning("%s: %s", key, msg)
+        if errors is not None:
+            errors.append(msg)
         return None
 
     if usage_df.empty and (wallboard_df is None or wallboard_df.empty):
@@ -114,13 +132,15 @@ def iter_tenants_for_db(
     for key in keys:
         cfg = tenants.get(key)
         if not cfg:
-            print(f"WARN: unknown tenant key {key}", file=sys.stderr)
+            log.warning("unknown tenant key %s", key)
             continue
         if arc and cfg.get("arc") != arc:
             continue
         if "contact_center_id" not in cfg:
-            print(f"WARN: skip {key}: missing contact_center_id", file=sys.stderr)
+            log.warning("skip %s: missing contact_center_id", key)
             continue
+        if not tenant_keys and cfg.get("enabled", True) is False:
+            continue  # disabled tenants are skipped unless named explicitly
         cc_id = int(cfg["contact_center_id"])
         if allowed_cc is not None and cc_id not in allowed_cc:
             continue

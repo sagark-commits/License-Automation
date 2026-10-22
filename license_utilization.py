@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Monthly Ameyo license utilization reporting from CSV exports."""
 
 from __future__ import annotations
@@ -288,7 +288,7 @@ def fetch_session_details(
             rows.append(item)
     return rows
 
-﻿
+
 def discover_csv_groups(input_dir: Path, wallboard_patterns: Sequence[str]) -> Dict[str, List[Path]]:
     groups: Dict[str, List[Path]] = {}
     for csv_path in sorted(input_dir.rglob("*.csv")):

@@ -67,9 +67,11 @@ def iter_all_login_workbook_sheets(tenants_data: list[Any], config: dict[str, An
         except ValueError:
             return 999
 
+    from login_sheets import sheets_for
+
     seen: set[str] = set()
     for td in sorted(tenants_data, key=sort_key):
-        for license_key, sheet_name in td.cfg.get("login_sheets", {}).items():
+        for license_key, sheet_name in sheets_for(td).items():
             if sheet_name in seen:
                 continue
             seen.add(sheet_name)

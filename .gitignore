@@ -43,3 +43,9 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+# Web UI runtime data (config, users, reports, secrets) and tooling
+data/
+.claude/
+.pytest_cache/
+*.partial
+server.log*

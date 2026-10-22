@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from db_login_queries import supervisors_without_campaign
+
 HOUR_COLUMNS = [f"Count at {h} hour" for h in range(1, 25)]
 
 
@@ -42,6 +44,7 @@ def usage_query(
     interval_end: datetime,
     *,
     wallboard: bool = False,
+    config: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Return SQL + params for production or wallboard usage (JRXML-equivalent)."""
     cc_id = tenant_cfg["contact_center_id"]
@@ -111,6 +114,32 @@ def usage_query(
         """
         return sql.strip(), params
 
+    if supervisors_without_campaign(tenant_cfg):
+        # Opt-in policy: supervisors count whenever they are logged in, even with no campaign row.
+        # Only valid for a tenant that owns its whole contact center (no campaign_ids).
+        from user_type_config import resolve_supervisor_types, sql_type_variants
+
+        params["sup_types"] = sql_type_variants(resolve_supervisor_types(tenant_cfg, config or {}))
+        params["wallboard_pattern"] = tenant_cfg.get("wallboard_user_pattern", "%wallboard%")
+        sql = f"""
+            SELECT
+                mc.login_time::date AS "Date",
+                bc.user_type AS user_type,
+                {hourly}
+            FROM user_session_history mc
+            JOIN users bc ON mc.user_id = bc.user_id
+            LEFT JOIN campaign_user_working_history c
+                   ON mc.session_id = c.session_id AND c.contact_center_id = %(cc_id)s
+            WHERE bc.contact_center_id = %(cc_id_text)s
+              AND (c.session_id IS NOT NULL OR lower(trim(bc.user_type)) = ANY(%(sup_types)s))
+              AND bc.user_id NOT ILIKE %(wallboard_pattern)s
+              AND mc.login_time >= %(interval_start)s
+              AND mc.login_time <= %(interval_end)s
+            GROUP BY mc.login_time::date, bc.user_type
+            ORDER BY mc.login_time::date
+        """
+        return sql.strip(), params
+
     sql = f"""
         SELECT
             mc.login_time::date AS "Date",
@@ -132,6 +161,8 @@ def usage_query(
 
 
 def tenant_wants_wallboard(tenant_cfg: dict[str, Any]) -> bool:
-    return bool(tenant_cfg.get("login_sheets", {}).get("wallboard")) or bool(
-        tenant_cfg.get("fetch_wallboard", False)
-    )
+    """Wallboard usage is detected for every tenant (a new tenant need not be configured for it).
+
+    Set ``fetch_wallboard: false`` on a tenant to skip the extra query.
+    """
+    return tenant_cfg.get("fetch_wallboard", True) is not False

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -174,6 +175,7 @@ def _build_tenants_from_csv(
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = parse_args()
     script_dir = Path(__file__).resolve().parent
     run_cfg_path = script_dir / "run_config.yaml"

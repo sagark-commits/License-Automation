@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import logging
 import sys
 
 if sys.version_info < (3, 8):
@@ -22,6 +23,8 @@ try:
     import psycopg2
 except ImportError:
     psycopg2 = None
+
+log = logging.getLogger("tmone")
 
 HOUR_COLUMNS = [f"Count at {h} hour" for h in range(1, 25)]
 LICENSE_KEYS = ("agent", "supervisor", "wallboard")
@@ -66,14 +69,20 @@ class TenantData:
     wallboard_df: pd.DataFrame | None = None
     peaks: dict[str, LicensePeak] = field(default_factory=dict)
     login_sessions: dict[str, pd.DataFrame] = field(default_factory=dict)
+    # run-time diagnostics (filled by the report run, shown in the UI / health checks)
+    login_sheet_map: dict[str, str] = field(default_factory=dict)
+    unclassified: dict[str, int] = field(default_factory=dict)
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def load_config(path: Path) -> dict[str, Any]:
-    with path.open(encoding="utf-8") as fh:
+    with path.open(encoding="utf-8-sig") as fh:
         data = yaml.safe_load(fh) or {}
     defaults = data.get("defaults", {})
     return {
         "defaults": defaults,
+        "ignored_types": list(defaults.get("ignored_user_types", ["Administrator"])),
         "tenants": data.get("tenants", {}) or {},
         "agent_types": list(defaults.get("agent_user_types", [])),
         "supervisor_types": list(defaults.get("supervisor_user_types", [])),
@@ -156,11 +165,41 @@ def row_peak_hour(row: pd.Series) -> int:
     return counts.index(max(counts)) + 1 if counts else 0
 
 
+def unclassified_types(
+    df: pd.DataFrame,
+    config: dict[str, Any],
+    tenant_cfg: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """user_type values seen in the usage data that match no licence bucket (and are not ignored).
+
+    Returns {user_type: highest hourly count}. These sessions are NOT counted in any licence,
+    so the report run warns about them.
+    """
+    from user_type_config import norm_type
+
+    out: dict[str, int] = {}
+    if df is None or df.empty or "user_type" not in df.columns:
+        return out
+    ignored = {norm_type(x) for x in config.get("ignored_types", [])}
+    for ut, grp in df.groupby("user_type"):
+        if classify_user_type(ut, config, tenant_cfg) is None and norm_type(ut) not in ignored:
+            out[str(ut)] = int(grp["Max count"].max())
+    return out
+
+
 def compute_peaks(
     df: pd.DataFrame,
     config: dict[str, Any],
     tenant_cfg: dict[str, Any] | None = None,
 ) -> dict[str, LicensePeak]:
+    """Peak per licence bucket.
+
+    Several Ameyo user types can feed one bucket (e.g. Professional-Agent + Executive are both the
+    AGENT licence).  A user has exactly one user_type, so the per-hour distinct counts of the
+    types are disjoint and are SUMMED per date before taking the maximum - taking the max of the
+    separate rows would understate the peak whenever two types are busy in the same hour.
+    Peak date ties resolve to the latest date; peak hour ties to the earliest hour.
+    """
     from user_type_config import apply_peak_display_labels, resolve_display_label
 
     peaks = {
@@ -172,31 +211,24 @@ def compute_peaks(
     }
     if df.empty:
         return peaks
-    for _, row in df.iterrows():
-        license_key = classify_user_type(row.get("user_type", ""), config, tenant_cfg)
-        if not license_key:
-            continue
-        if license_key not in peaks:
-            peaks[license_key] = LicensePeak(
-                license_key=license_key,
-                license_label=resolve_display_label(license_key, config, tenant_cfg),
-            )
-        d = row["Date"]
-        count = int(row["Max count"])
-        peaks[license_key].daily_counts[d] = max(peaks[license_key].daily_counts.get(d, 0), count)
-    for license_key, peak in peaks.items():
+    work = df.copy()
+    work["_bucket"] = work["user_type"].map(lambda ut: classify_user_type(ut, config, tenant_cfg))
+    work = work[work["_bucket"].notna()]
+    hourly_by: dict[tuple[str, Any], list[int]] = {}
+    for (bucket, d), grp in work.groupby(["_bucket", "Date"]):
+        hourly_by[(bucket, d)] = [int(grp[c].sum()) for c in HOUR_COLUMNS]
+        peak = peaks.setdefault(
+            bucket,
+            LicensePeak(license_key=bucket, license_label=resolve_display_label(bucket, config, tenant_cfg)),
+        )
+        peak.daily_counts[d] = max(hourly_by[(bucket, d)])
+    for bucket, peak in peaks.items():
         if not peak.daily_counts:
             continue
         peak.peak_count = max(peak.daily_counts.values())
         peak.peak_date = max(d for d, c in peak.daily_counts.items() if c == peak.peak_count)
-        day_rows = df[
-            df["Date"].eq(peak.peak_date)
-            & df["user_type"].apply(
-                lambda ut: classify_user_type(ut, config, tenant_cfg) == license_key
-            )
-        ]
-        if not day_rows.empty:
-            peak.peak_hour = row_peak_hour(day_rows.loc[day_rows["Max count"].idxmax()])
+        hours = hourly_by[(bucket, peak.peak_date)]
+        peak.peak_hour = hours.index(max(hours)) + 1 if hours else 0
     apply_peak_display_labels(peaks, config, tenant_cfg)
     return peaks
 
@@ -368,37 +400,54 @@ def build_tenant_sheet(td: TenantData, config: dict[str, Any]) -> pd.DataFrame:
         return display_user_type(key, config, td.cfg) if key else ut
 
     detail["user_type"] = detail["user_type"].apply(_map_ut)
+    # Several Ameyo user types can share one licence label (e.g. Professional-Agent + Executive).
+    # Show ONE row per date and label with the combined hourly counts, matching compute_peaks().
+    detail = detail.groupby(["Date", "user_type"], sort=False, as_index=False)[HOUR_COLUMNS].sum()
+    detail["Max count"] = detail[HOUR_COLUMNS].max(axis=1)
     detail = detail[detail_cols]
     width = len(detail_cols)
     all_rows = peak_rows + [detail_cols] + detail.values.tolist()
     return pd.DataFrame([row + [None] * (width - len(row)) for row in all_rows])
 
 
-def fetch_login_sessions(conn, td: TenantData, config: dict[str, Any]) -> None:
-    from db_login_queries import login_session_query
+def fetch_login_sessions(conn, td: TenantData, config: dict[str, Any], errors: list[str] | None = None) -> None:
+    """Fetch the peak-hour login sessions for every licence of the tenant that has a peak.
 
-    for license_key, sheet_name in td.cfg.get("login_sheets", {}).items():
+    A failed query is recorded in ``td.errors`` (and ``errors``) instead of being swallowed, so the
+    caller can show it; the sheet is still created (empty) so the failure is visible in the file too.
+    """
+    from db_login_queries import login_session_query
+    from login_export import prepare_login_dataframe
+    from login_sheets import configured_sheet_names, effective_login_sheets
+
+    if not td.login_sheet_map:
+        td.login_sheet_map = effective_login_sheets(
+            td.cfg, td.peaks, configured_sheet_names(config.get("tenants", {})), td.key
+        )
+    for license_key, sheet_name in td.login_sheet_map.items():
         # Executive is folded into agent peaks/display; still allow executive login sheets.
         peak_key = "agent" if license_key == "executive" else license_key
         peak = td.peaks.get(peak_key) or td.peaks.get(license_key)
         if not peak or not peak.peak_date or peak.peak_count <= 0:
             continue
-        from login_export import prepare_login_dataframe
-
         peak_hour = peak.peak_hour or 0
         query_key = "agent" if license_key == "executive" else license_key
         sql, params = login_session_query(td.cfg, query_key, config, peak.peak_date, peak_hour)
         try:
             df = pd.read_sql(sql, conn, params=params)
         except Exception as exc:
-            print(f"  WARN login query {sheet_name}: {exc}", file=sys.stderr)
+            msg = "login query for sheet '%s' failed: %s" % (sheet_name, str(exc).strip().splitlines()[0])
+            log.warning("%s: %s", td.key, msg)
+            td.errors.append(msg)
+            if errors is not None:
+                errors.append(msg)
             df = pd.DataFrame()
         td.login_sessions[sheet_name] = prepare_login_dataframe(df)
         n = len(td.login_sessions[sheet_name])
         hour_label = f" hour {peak_hour}" if peak_hour else ""
-        print(
-            f"  Login DB: {sheet_name} | peak {peak.peak_date}{hour_label} "
-            f"(max {peak.peak_count}) | {n} sessions"
+        log.info(
+            "  Login DB: %s | peak %s%s (max %s) | %s sessions",
+            sheet_name, peak.peak_date, hour_label, peak.peak_count, n,
         )
 
 
@@ -481,6 +530,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = parse_args()
     script_dir = Path(__file__).resolve().parent
     run_cfg_path = script_dir / "run_config.yaml"
