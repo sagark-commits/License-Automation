@@ -277,3 +277,11 @@ def test_idle_tcp_connection_cannot_freeze_a_tls_server(tmp_path):
     idle.close()
     srv.shutdown()
     srv.server_close()
+
+
+def test_database_without_password_counts_as_configured(env):
+    # trust authentication: no password is needed, so none must be required
+    for arc in ("ARC-1", "ARC-2"):
+        env.data.save_db(arc, {"host": "10.0.0.1", "port": 5432, "name": "oneproduct", "user": "ro", "password": ""}, "test")
+    assert env.data.db_configured()
+    assert "ready" in env.client("admin1").get("/settings/db").text
