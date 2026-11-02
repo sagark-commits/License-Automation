@@ -426,7 +426,7 @@ def test_registry_save_is_atomic_and_yaml_stays_readable_by_the_engine(env):
 
 # ------------------------------------------------------------------ settings
 def test_global_defaults_can_be_changed(env):
-    c = env.client("oper1")
+    c = env.client("admin1")
     form = {"agent_user_types": "Professional-Agent\nAmeyo-Pro", "supervisor_user_types": "Supervisor", "wallboard_user_types": "Wallboard",
             "ignored_user_types": "Administrator\nTester", "label_agent": "Agent", "label_supervisor": "Sup", "label_wallboard": "WB", "keep_runs": "10"}
     assert c.post_csrf("/settings", form).status == 303

@@ -348,7 +348,8 @@ class ConfigPages:
             ui.esc("\n".join(d.get("wallboard_user_types", []))), ui.esc("\n".join(d.get("ignored_user_types", ["Administrator"]))),
             ui.field("Agent licence label", "label_agent", labels.get("agent", "Professional-Agent")), ui.field("Supervisor label", "label_supervisor", labels.get("supervisor", "Supervisor")),
             ui.field("Wallboard label", "label_wallboard", labels.get("wallboard", "Wallboard User")),
-            ui.field("How many finished reports to keep", "keep_runs", str(self.data.get_settings().get("keep_runs", 24)), type_="number", extra='min="3" max="200"', cls="s"))
+            ui.field("How many finished reports to keep", "keep_runs", str(self.data.get_settings().get("keep_runs", 24)), type_="number", extra='min="3" max="200"' + ("" if can(req.user["role"], "delete_runs") else " readonly"), cls="s", hint="Older reports are deleted automatically - administrators only.")
+            + ui.field("Stop a run after (minutes)", "run_timeout_min", str(self.data.get_settings().get("run_timeout_min", 30)), type_="number", extra='min="5" max="240"' + ("" if can(req.user["role"], "delete_runs") else " readonly"), cls="s", hint="Administrators only."))
         hist = self.data.list_history()
         hist_html = ""
         if can(req.user["role"], "users") and hist:
@@ -367,13 +368,17 @@ class ConfigPages:
         d["license_labels"] = {"agent": req.f("label_agent").strip(), "supervisor": req.f("label_supervisor").strip(), "wallboard": req.f("label_wallboard").strip()}
         d["tenant_sheet_agent_label"] = d["license_labels"]["agent"]
         errs = validate_defaults(d)
-        try:
-            keep = int(req.f("keep_runs", "24"))
-            if not 3 <= keep <= 200:
-                raise ValueError
-        except ValueError:
-            errs.append("Keep between 3 and 200 reports.")
-            keep = 24
+        cur = self.data.get_settings()
+        keep, timeout = int(cur.get("keep_runs", 24)), int(cur.get("run_timeout_min", 30))
+        if can(req.user["role"], "delete_runs"):      # lowering keep_runs deletes reports -> same right as deleting one
+            try:
+                keep = int(req.f("keep_runs", str(keep)))
+                timeout = int(req.f("run_timeout_min", str(timeout)))
+                if not 3 <= keep <= 200 or not 5 <= timeout <= 240:
+                    raise ValueError
+            except ValueError:
+                errs.append("Keep between 3 and 200 reports; run time limit between 5 and 240 minutes.")
+                keep, timeout = int(cur.get("keep_runs", 24)), int(cur.get("run_timeout_min", 30))
         # a changed default must not create a conflict inside a tenant's own lists
         from user_type_config import type_conflicts
         cfg_engine = engine_config(reg)
@@ -384,8 +389,8 @@ class ConfigPages:
             req.flash("bad", "Not saved: " + " ".join(errs))
             return _redirect("/settings")
         self.data.save_registry(reg, req.user["username"], "edited global defaults")
-        self.data.save_settings({"keep_runs": keep}, req.user["username"])
-        self.jobs.keep_runs = keep
+        self.data.save_settings({"keep_runs": keep, "run_timeout_min": timeout}, req.user["username"])
+        self.jobs.keep_runs, self.jobs.timeout_min = keep, timeout
         req.flash("ok", "Settings saved.")
         return _redirect("/settings")
 

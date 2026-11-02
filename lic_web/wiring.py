@@ -42,6 +42,7 @@ def create_app(
     data.init()
     users = UserStore(data.users_path)
     jobs = JobManager(data, runner or default_runner(data), keep_runs=int(data.get_settings().get("keep_runs", 24)))
+    jobs.timeout_min = int(data.get_settings().get("run_timeout_min", 30))
     app = App(data, jobs, users, trust_proxy=trust_proxy, secure_cookies=secure_cookies)
     if start_worker:
         jobs.start()

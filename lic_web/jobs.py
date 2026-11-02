@@ -17,18 +17,22 @@ from typing import Any, Callable, Deque, Dict, List, Optional
 
 from .store import DataDir, atomic_write
 
-RUN_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
+RUN_ID_RE = re.compile(r"\d{8}-\d{6}-[0-9a-f]{4}")
 STAGE_RANGE = {"queued": (0, 0), "connect": (0, 5), "usage": (5, 60), "login": (60, 90), "write": (90, 95), "verify": (95, 99), "done": (100, 100)}
 FINISHED = ("done", "failed", "cancelled", "interrupted")
 MAX_QUEUED = 5
 MAX_EVENTS = 2000
+MAX_LOG_BYTES = 1024 * 1024          # per-run events.log
+MAX_LINE = 500
+MIN_FREE_BYTES = 500 * 1024 * 1024  # refuse to start a run below this much free disk
+DEFAULT_TIMEOUT_MIN = 30
 
 Runner = Callable[..., Dict[str, Any]]
 log = logging.getLogger("lic_web.jobs")
 
 
 def is_valid_run_id(run_id: str) -> bool:
-    return bool(RUN_ID_RE.match(run_id or ""))
+    return bool(RUN_ID_RE.fullmatch(run_id or ""))
 
 
 class _EventHandler(logging.Handler):
@@ -49,6 +53,9 @@ class JobManager:
         self.data, self.runner, self.keep_runs = data, runner, keep_runs
         self._cv = threading.Condition()
         self._zip_lock = threading.Lock()
+        self._log_bytes: Dict[str, int] = {}
+        self.timeout_min = DEFAULT_TIMEOUT_MIN
+        self.min_free_bytes = MIN_FREE_BYTES
         self._queue: Deque[str] = deque()
         self._state: Dict[str, Dict[str, Any]] = {}
         self._events: Dict[str, List[str]] = {}
@@ -105,6 +112,9 @@ class JobManager:
             self._cv.notify_all()
 
     def submit(self, month: str, arc: Optional[str], tenants: Optional[List[str]], user: str) -> str:
+        free = shutil.disk_usage(str(self.data.runs_dir)).free
+        if free < self.min_free_bytes:
+            raise ValueError("Not enough free disk space on the server (%d MB free, %d MB needed). Ask an administrator to free space." % (free // 2**20, self.min_free_bytes // 2**20))
         with self._cv:
             queued = sum(1 for s in self._state.values() if s["status"] in ("queued", "running"))
             if queued >= MAX_QUEUED:
@@ -237,12 +247,18 @@ class JobManager:
                 log.exception("worker error")
 
     def _add_event(self, run_id: str, text: str) -> None:
-        line = "%s  %s" % (time.strftime("%H:%M:%S"), text)
+        line = "%s  %s" % (time.strftime("%H:%M:%S"), str(text)[:MAX_LINE])
         with self._cv:
             ev = self._events.setdefault(run_id, [])
             ev.append(line)
             if len(ev) > MAX_EVENTS:
                 del ev[: len(ev) - MAX_EVENTS]
+        used = self._log_bytes.get(run_id, 0)
+        if used > MAX_LOG_BYTES:
+            return
+        self._log_bytes[run_id] = used + len(line) + 1
+        if self._log_bytes[run_id] > MAX_LOG_BYTES:
+            line = "... log truncated (size limit) ..."
         try:
             with (self._run_dir(run_id) / "events.log").open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
@@ -276,16 +292,20 @@ class JobManager:
         eng_log.setLevel(logging.INFO)
         error: Optional[str] = None
         result: Optional[Dict[str, Any]] = None
+        t0 = time.time()
         status = "done"
         try:
             result = self.runner(
                 params["month"], arc=params["arc"], tenants=params["tenants"], output_dir=self._run_dir(run_id),
                 progress=lambda ev: self._progress(run_id, ev),
-                should_cancel=lambda: run_id in self._cancel,
+                should_cancel=lambda: run_id in self._cancel or (time.time() - t0) > self.timeout_min * 60,
                 previous_summary=self.previous_summary(params["month"]),
             )
         except report_service.RunCancelled:
-            status, error = "cancelled", "Cancelled by the user."
+            if run_id not in self._cancel and (time.time() - t0) > self.timeout_min * 60:
+                status, error = "failed", "Stopped: the run exceeded the %d-minute time limit. Nothing was written." % self.timeout_min
+            else:
+                status, error = "cancelled", "Cancelled by the user."
         except report_service.ReportError as exc:
             status, error = "failed", str(exc)
         except Exception as exc:

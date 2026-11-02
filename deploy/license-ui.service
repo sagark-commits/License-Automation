@@ -1,5 +1,9 @@
 # /etc/systemd/system/license-ui.service
 # Adjust User, WorkingDirectory and the python path to your install.
+#
+# The limits below are STARTING VALUES, written so the UI can never starve a call server.
+# They have NOT been measured: run one full report while watching `top` and `systemctl status license-ui`
+# (and pg_stat_activity on the database) and adjust MemoryHigh/MemoryMax/CPUQuota to what you see.
 [Unit]
 Description=TMONE licence utilization web UI
 After=network.target
@@ -13,9 +17,33 @@ Environment=LIC_DATA_DIR=/var/lib/license-ui
 ExecStart=/usr/bin/python3.9 run_web.py serve --host 127.0.0.1 --port 8088 --trust-proxy --secure-cookies
 Restart=on-failure
 RestartSec=5
+
+# --- resource limits: the UI must never compete with live services ---
+CPUQuota=50%
+CPUWeight=20
+MemoryHigh=600M
+MemoryMax=800M
+TasksMax=64
+Nice=19
+IOSchedulingClass=idle
+OOMScoreAdjust=1000
+LimitNOFILE=256
+
+# --- sandbox ---
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/license-ui
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=true
+SystemCallFilter=@system-service
 
 [Install]
 WantedBy=multi-user.target

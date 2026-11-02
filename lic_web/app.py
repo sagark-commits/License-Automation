@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import logging
 import re
+import threading
 import time
 import urllib.parse
 from http.cookies import SimpleCookie
@@ -19,8 +20,10 @@ from .store import DataDir
 log = logging.getLogger("lic_web")
 COOKIE = "lic_sid"
 MAX_BODY = 1024 * 1024
+GENERIC_ERROR = "A problem occurred. Ask an operator or administrator for the details."
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+MONTH_RE = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
+NEXT_RE = re.compile(r"/[A-Za-z0-9_\-./?=&%]*")
 
 
 class Response:
@@ -141,7 +144,7 @@ def json_response(obj: Any, status: int = 200) -> Response:
 
 def safe_next(url: str) -> str:
     """Only allow same-site relative redirects (no open redirect)."""
-    if url and url.startswith("/") and not url.startswith("//") and "\\" not in url and "\n" not in url and "\r" not in url:
+    if url and len(url) <= 300 and NEXT_RE.fullmatch(url) and not url.startswith("//"):
         return url
     return "/generate"
 
@@ -178,6 +181,7 @@ class App(ConfigPages):
         self.throttle = LoginThrottle()
         self.secret = load_or_create_secret(data.secret_path)
         self.trust_proxy, self.secure_cookies = trust_proxy, secure_cookies
+        self._write_lock = threading.RLock()
         self.routes = self._build_routes()
 
     # ------------------------------------------------------------------ routing table
@@ -246,7 +250,7 @@ class App(ConfigPages):
     def dispatch(self, req: Request) -> Response:
         path_matched = False
         for method, pattern, handler, perm in self.routes:
-            m = pattern.match(req.path)
+            m = pattern.fullmatch(req.path)
             if not m:
                 continue
             path_matched = True
@@ -262,6 +266,9 @@ class App(ConfigPages):
                     raise HttpError(403, "Your role (%s) is not allowed to do this." % req.user["role"])
             if req.method == "POST" and handler != self.h_login:
                 self.check_csrf(req)
+            if req.method == "POST" and handler not in (self.h_tenant_discover, self.h_db_test):    # these two wait on the network
+                with self._write_lock:
+                    return handler(req, **m.groupdict())
             return handler(req, **m.groupdict())
         if path_matched:
             raise HttpError(405, "Method not allowed")
@@ -318,7 +325,8 @@ class App(ConfigPages):
 
     def h_health(self, req: Request) -> Response:
         worker = self.jobs._worker
-        return json_response({"status": "ok", "version": __version__, "worker": bool(worker and worker.is_alive()), "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+        alive = bool(worker and worker.is_alive())
+        return json_response({"status": "ok" if alive else "degraded"}, 200 if alive else 503)
 
     def h_static(self, req: Request, name: str) -> Response:
         if name == "app.css":
@@ -358,12 +366,13 @@ class App(ConfigPages):
         origin = req.environ.get("HTTP_ORIGIN")
         if origin and origin != "null" and urllib.parse.urlparse(origin).netloc != req.environ.get("HTTP_HOST", ""):
             raise HttpError(403, "Cross-site request blocked.")
-        username, password = req.f("username").strip(), req.f("password")
+        username, password = req.f("username").strip()[:64], req.f("password")[:256]
         if not self._login_token_ok(req.f("_token")):
             return self.h_login_form(req, "The sign-in form expired. Please try again.", username)
         wait = self.throttle.blocked_for(req.ip, username)
         if wait:
-            self.data.audit(username, "login.blocked", "locked for %ds" % wait, req.ip)
+            if self.throttle.first_block_note(req.ip, username):
+                self.data.audit(username, "login.blocked", "locked for %ds" % wait, req.ip)
             return self.h_login_form(req, "Too many failed attempts. Try again in %d minute(s)." % ((wait + 59) // 60), username)
         user = self.users.authenticate(username, password) if username and password else None
         if not user:
@@ -391,9 +400,16 @@ class App(ConfigPages):
 
     def h_account_post(self, req: Request) -> Response:
         u = req.user["username"]
+        key = "acct:" + u
+        wait = self.throttle.blocked_for(req.ip, key)
+        if wait:
+            req.flash("bad", "Too many wrong passwords. Try again in %d minute(s)." % ((wait + 59) // 60))
+            return redirect("/account")
         if not self.users.authenticate(u, req.f("current")):
+            self.throttle.failure(req.ip, key)
             req.flash("bad", "The current password is wrong.")
             return redirect("/account")
+        self.throttle.success(req.ip, key)
         if req.f("new") != req.f("new2"):
             req.flash("bad", "The two new passwords are different.")
             return redirect("/account")
@@ -453,7 +469,7 @@ class App(ConfigPages):
 
     def h_generate_post(self, req: Request) -> Response:
         month = req.f("month")
-        if not MONTH_RE.match(month) or month not in month_options(25):
+        if not MONTH_RE.fullmatch(month) or month not in month_options(25):
             req.flash("bad", "Choose a valid month.")
             return redirect("/generate")
         if not self.data.db_configured():
@@ -503,7 +519,9 @@ class App(ConfigPages):
 
     def h_run_status(self, req: Request, rid: str) -> Response:
         run = self._get_run(rid)
-        return json_response({"status": run["status"], "progress": run["progress"], "error": run["error"], "events": self.jobs.events(rid, 300)})
+        detail = can(req.user["role"], "generate")
+        return json_response({"status": run["status"], "progress": run["progress"], "error": run["error"] if detail else GENERIC_ERROR,
+                              "events": self.jobs.events(rid, 300) if detail else []})
 
     def h_run(self, req: Request, rid: str) -> Response:
         run = self._get_run(rid)
@@ -522,10 +540,10 @@ class App(ConfigPages):
                 '<span class="mute" id="stage">%s</span><span class="right" id="pct">%d%%</span></div><div class="bar m10"><i id="bar" data-pct="%d"></i></div>'
                 '<pre class="log" id="log">%s</pre></div>') % (
             ui.esc(rid), 1 if finished else 0, ui.esc(run["status"]), ui.esc(run["status"]), ui.esc(pg.get("message", "")), pg.get("percent", 0), pg.get("percent", 0),
-            ui.esc("\n".join(self.jobs.events(rid, 300))))
+            ui.esc("\n".join(self.jobs.events(rid, 300) if can(req.user["role"], "generate") else [])))
         parts = [head, live]
         if run.get("error"):
-            parts.insert(1, ui.alert("bad", "<b>The report could not be completed.</b><br>%s" % ui.esc(run["error"])))
+            parts.insert(1, ui.alert("bad", "<b>The report could not be completed.</b><br>%s" % ui.esc(run["error"] if can(req.user["role"], "generate") else GENERIC_ERROR)))
         if res:
             health = res.get("health")
             c = res.get("counts", {})
@@ -538,7 +556,7 @@ class App(ConfigPages):
                     '<a class="btn%s" href="/runs/%s/download/%s">%s</a>' % ("" if kind in ("utilization", "login") else " sec", ui.esc(rid), kind, label)
                     for kind, label in (("utilization", "Utilization workbook (.xlsx)"), ("login", "Login-count workbook (.xlsx)"), ("zip", "Both + manifest (.zip)"), ("manifest", "manifest.json"))))
             order = {"error": 0, "warn": 1, "info": 2}
-            fr = [[ui.badge(f["severity"], {"error": "bad", "warn": "warn", "info": "info"}[f["severity"]]), ui.esc(f["code"]), ui.esc(f["message"])]
+            fr = [[ui.badge(f["severity"], {"error": "bad", "warn": "warn", "info": "info"}[f["severity"]]), ui.esc(f["code"]), ui.esc(f["message"] if (f["code"] not in ("E01", "V00") or can(req.user["role"], "generate")) else GENERIC_ERROR)]
                   for f in sorted(res.get("findings", []), key=lambda f: order.get(f["severity"], 3))]
             parts.append('<div class="card"><h2>Checks and findings</h2>%s</div>' % ui.table(["", "Code", "What was found"], fr, empty="No findings - nothing to review."))
             tr = []
@@ -655,4 +673,7 @@ class App(ConfigPages):
 
 def _consteq(a: str, b: str) -> bool:
     import hmac
-    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+    try:
+        return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+    except (UnicodeError, TypeError):
+        return False

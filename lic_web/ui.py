@@ -50,7 +50,7 @@ JS = r"""
 var csrf=(document.querySelector('meta[name=csrf]')||{}).content||'';
 function $(s,r){return (r||document).querySelector(s)}function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}
 function post(url,data){return fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(data||{})}).then(function(r){return r.json()})}
-function esc(s){var d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML}
+function esc(s){var d=document.createElement('div');d.textContent=s==null?'':String(s);return d.innerHTML.replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
 /* progress bars: width from data-pct (inline styles are blocked by the CSP) */
 $$('[data-pct]').forEach(function(el){el.style.width=el.getAttribute('data-pct')+'%'});
