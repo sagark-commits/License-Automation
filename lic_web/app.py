@@ -462,7 +462,7 @@ class App(ConfigPages):
                     'you can close this page - the run continues in the background.</p><button type="submit"%s>Generate report</button></form>') % (
                 self.csrf(req),
                 ui.select("Month", "month", [(m, m + (" (in progress)" if i == 0 else "")) for i, m in enumerate(months)], default_month, cls="s"),
-                ui.select("Scope", "scope", [("all", "All enabled tenants (%d)" % len(tenants))] + [("arc:" + a, "Only %s" % a) for a in arcs] + [("selected", "Selected tenants...")], "all", extra='id="scope-mode"'),
+                ui.select("Scope", "scope", [("all", "All enabled tenants (%d)" % len(tenants))] + [("arc:" + a, "Only %s" % a) for a in arcs] + [("selected", "Selected tenants...")], "all"),
                 boxes, "" if self.data.db_configured() else " disabled")
         body = '<h1>Generate the monthly report</h1><p class="sub">Produces the utilization workbook and the login-count workbook, then checks them against each other.</p>%s<div class="card">%s</div>%s' % (banners, form, last_html)
         return self.page(req, "Generate", body, "generate")

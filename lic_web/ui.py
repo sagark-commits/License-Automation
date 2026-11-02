@@ -59,7 +59,7 @@ $$('[data-pct]').forEach(function(el){el.style.width=el.getAttribute('data-pct')
 document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('[data-confirm]');if(b&&!window.confirm('Are you sure? This cannot be undone.')){e.preventDefault();e.stopPropagation()}},true);
 
 /* generate: scope selector */
-var scope=$('#scope-mode');if(scope){var box=$('#scope-tenants');function sync(){box.classList.toggle('show',scope.value==='selected')}scope.addEventListener('change',sync);sync();
+var scope=$('#scope');if(scope){var box=$('#scope-tenants');function sync(){box.classList.toggle('show',scope.value==='selected')}scope.addEventListener('change',sync);sync();
 $$('[data-sel]').forEach(function(b){b.addEventListener('click',function(){var on=b.getAttribute('data-sel')==='all';$$('input[name=tenant]').forEach(function(c){if(!b.dataset.arc||c.dataset.arc===b.dataset.arc)c.checked=on})})})}
 
 /* test DB connections */

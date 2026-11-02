@@ -277,3 +277,21 @@ def test_idle_tcp_connection_cannot_freeze_a_tls_server(tmp_path):
     idle.close()
     srv.shutdown()
     srv.server_close()
+
+
+def test_database_without_password_counts_as_configured(env):
+    # trust authentication: no password is needed, so none must be required
+    for arc in ("ARC-1", "ARC-2"):
+        env.data.save_db(arc, {"host": "10.0.0.1", "port": 5432, "name": "oneproduct", "user": "ro", "password": ""}, "test")
+    assert env.data.db_configured()
+    assert "ready" in env.client("admin1").get("/settings/db").text
+
+
+def test_generate_scope_dropdown_has_one_id_and_the_script_targets_it(env):
+    import re
+    from lic_web import ui
+    page = env.client("oper1").get("/generate").text
+    assert page.count('id="scope"') == 1 and 'id="scope-mode"' not in page and 'id="scope-tenants"' in page
+    assert "$('#scope')" in ui.JS
+    ids = re.findall(r'\sid="([^"]+)"', page)
+    assert len(ids) == len(set(ids)), "duplicate ids on the page"
