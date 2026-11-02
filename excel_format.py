@@ -500,6 +500,18 @@ def add_dashboard_sheet(wb, tenants_data: list[Any], month: str, config: dict[st
     ws.sheet_view.showGridLines = False
 
 
+def neutralize_formulas(wb) -> None:
+    """Text (from the database or the tenant registry) that starts with = + - @ tab or CR would be run
+    as a formula when the workbook is opened; prefix it with an apostrophe so it stays plain text."""
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for cell in row:
+                v = cell.value
+                if isinstance(v, str) and v and v[0] in ("=", "+", "-", "@", "\t", "\r"):
+                    cell.value = "'" + v
+                    cell.data_type = "s"
+
+
 def format_utilization_workbook(
     wb,
     month: str,

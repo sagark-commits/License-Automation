@@ -1,5 +1,13 @@
 # Changelog
 
+## Production hardening
+- Server: TLS handshake per connection inside the worker thread (an idle connection can no longer freeze the server), 32-connection cap, no Server banner; refuses unsafe listen options.
+- Excel: text starting with = + - @ is neutralised in every cell; the registry rejects such names.
+- Login: bounded username, per-IP throttle across usernames, capped throttle maps, one audit line per lockout, /account password check throttled; strict redirect allowlist; non-ASCII tokens no longer cause a 500.
+- Only administrators can change keep_runs / the run time limit; viewers no longer see database hosts in error messages; /healthz shows only ok/degraded.
+- Runs: wall-clock time limit (default 30 min), free-disk guard (500 MB), per-run log size cap, serialised registry writes, cross-process lock on users.json.
+- deploy/: systemd resource limits and sandbox, hardened nginx example.
+
 ## Web UI + correctness fixes
 - New browser UI (`run_web.py`, package `lic_web/`) to generate reports, manage tenants/agent types, databases and users. See HOWTO_WEB_UI.md.
 - New `verify_report.py`: re-reads both workbooks and reconciles them; run automatically after every UI report.

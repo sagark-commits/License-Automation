@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -64,6 +65,23 @@ class UserStore:
         self.path = Path(path)
         self._lock = threading.RLock()
 
+    @contextlib.contextmanager
+    def _guard(self):
+        with self._lock:
+            fh = None
+            try:
+                import fcntl                      # POSIX only; on Windows the thread lock is all there is
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                fh = open(str(self.path) + ".lock", "a")
+                fcntl.flock(fh, fcntl.LOCK_EX)
+            except ImportError:
+                pass
+            try:
+                yield
+            finally:
+                if fh:
+                    fh.close()
+
     def _load(self) -> Dict[str, Dict[str, Any]]:
         if not self.path.exists():
             return {}
@@ -76,12 +94,12 @@ class UserStore:
         atomic_write(self.path, json.dumps(users, indent=2, sort_keys=True).encode("utf-8"))
 
     def list(self) -> List[Dict[str, Any]]:
-        with self._lock:
+        with self._guard():
             return [{"username": u, "role": d["role"], "disabled": bool(d.get("disabled")), "created": d.get("created", ""),
                      "last_login": d.get("last_login", "")} for u, d in sorted(self._load().items())]
 
     def count(self) -> int:
-        with self._lock:
+        with self._guard():
             return len(self._load())
 
     def create(self, username: str, password: str, role: str) -> None:
@@ -92,7 +110,7 @@ class UserStore:
         problem = check_password_policy(username, password)
         if problem:
             raise ValueError(problem)
-        with self._lock:
+        with self._guard():
             users = self._load()
             if username.lower() in {u.lower() for u in users}:
                 raise ValueError("User already exists.")
@@ -103,7 +121,7 @@ class UserStore:
         problem = check_password_policy(username, password)
         if problem:
             raise ValueError(problem)
-        with self._lock:
+        with self._guard():
             users = self._load()
             if username not in users:
                 raise ValueError("No such user.")
@@ -113,7 +131,7 @@ class UserStore:
     def set_role(self, username: str, role: str) -> None:
         if role not in ROLES:
             raise ValueError("Unknown role.")
-        with self._lock:
+        with self._guard():
             users = self._load()
             if username not in users:
                 raise ValueError("No such user.")
@@ -123,7 +141,7 @@ class UserStore:
             self._save(users)
 
     def set_disabled(self, username: str, disabled: bool) -> None:
-        with self._lock:
+        with self._guard():
             users = self._load()
             if username not in users:
                 raise ValueError("No such user.")
@@ -133,7 +151,7 @@ class UserStore:
             self._save(users)
 
     def delete(self, username: str) -> None:
-        with self._lock:
+        with self._guard():
             users = self._load()
             if username not in users:
                 raise ValueError("No such user.")
@@ -148,13 +166,13 @@ class UserStore:
 
     def authenticate(self, username: str, password: str) -> Optional[Dict[str, Any]]:
         """Return {'username','role'} on success. Always does one PBKDF2 so timing does not reveal valid names."""
-        with self._lock:
+        with self._guard():
             users = self._load()
         rec = users.get(username)
         ok = verify_password(password, rec["hash"] if rec else _DUMMY_HASH)
         if not rec or not ok or rec.get("disabled"):
             return None
-        with self._lock:
+        with self._guard():
             users = self._load()
             if username in users:
                 users[username]["last_login"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -214,38 +232,72 @@ class Sessions:
 
 
 class LoginThrottle:
-    """5 failures within 10 minutes lock that username+IP for 5 minutes."""
+    """Failed-login limiter: per (IP, username) and per IP across all usernames.
 
-    def __init__(self, max_failures: int = 5, window: int = 600, lockout: int = 300):
-        self.max, self.window, self.lockout = max_failures, window, lockout
+    5 failures / 10 min lock one username+IP for 5 min; 30 failures / 10 min lock the IP.
+    Both maps are hard-capped, so a flood of random usernames cannot grow memory.
+    """
+
+    CAP = 5000
+
+    def __init__(self, max_failures: int = 5, window: int = 600, lockout: int = 300, max_ip_failures: int = 30):
+        self.max, self.window, self.lockout, self.max_ip = max_failures, window, lockout, max_ip_failures
         self._f: Dict[str, List[float]] = {}
         self._locked: Dict[str, float] = {}
+        self._noted: set = set()
         self._lock = threading.Lock()
 
     @staticmethod
-    def _key(ip: str, username: str) -> str:
-        return "%s|%s" % (ip, username.lower())
+    def _keys(ip: str, username: str) -> List[str]:
+        return ["%s|%s" % (ip, username.lower()[:64]), "ip|%s" % ip]
 
     def blocked_for(self, ip: str, username: str) -> int:
         with self._lock:
-            until = self._locked.get(self._key(ip, username), 0)
-            return max(0, int(until - time.time()))
+            now = time.time()
+            return max(0, int(max(self._locked.get(k, 0) for k in self._keys(ip, username)) - now))
+
+    def first_block_note(self, ip: str, username: str) -> bool:
+        """True only once per lockout, so blocked attempts do not each write an audit line."""
+        k = self._keys(ip, username)[0]
+        with self._lock:
+            if k in self._noted:
+                return False
+            if len(self._noted) < self.CAP:
+                self._noted.add(k)
+            return True
 
     def failure(self, ip: str, username: str) -> None:
-        k, now = self._key(ip, username), time.time()
+        now = time.time()
         with self._lock:
-            fails = [t for t in self._f.get(k, []) if now - t < self.window] + [now]
-            self._f[k] = fails
-            if len(fails) >= self.max:
-                self._locked[k] = now + self.lockout
-                self._f[k] = []
-            if len(self._f) > 5000:      # evict only expired entries so a flood cannot reset live counters
-                self._f = {k: v for k, v in self._f.items() if v and now - v[-1] < self.window}
+            user_key, ip_key = self._keys(ip, username)
+            for k, limit in ((user_key, self.max), (ip_key, self.max_ip)):
+                fails = [t for t in self._f.get(k, []) if now - t < self.window] + [now]
+                self._f[k] = fails
+                if len(fails) >= limit:
+                    self._locked[k] = now + self.lockout
+                    self._f[k] = []
+            self._prune(now)
+
+    def _prune(self, now: float) -> None:
+        if len(self._locked) > 0:
+            for k in [k for k, until in self._locked.items() if until <= now]:
+                del self._locked[k]
+                self._noted.discard(k)
+        if len(self._f) > self.CAP:
+            self._f = {k: v for k, v in self._f.items() if v and now - v[-1] < self.window}
+        if len(self._f) > self.CAP:                      # still full of live entries: drop the oldest half
+            for k in sorted(self._f, key=lambda k: self._f[k][-1])[: self.CAP // 2]:
+                del self._f[k]
+        if len(self._locked) > self.CAP:
+            for k in sorted(self._locked, key=self._locked.get)[: self.CAP // 2]:
+                del self._locked[k]
 
     def success(self, ip: str, username: str) -> None:
         with self._lock:
-            self._f.pop(self._key(ip, username), None)
-            self._locked.pop(self._key(ip, username), None)
+            k = self._keys(ip, username)[0]
+            self._f.pop(k, None)
+            self._locked.pop(k, None)
+            self._noted.discard(k)
 
 
 def can(role: str, permission: str) -> bool:
@@ -273,4 +325,7 @@ def unsign(secret: bytes, signed: str) -> Optional[str]:
         return None
     value, _, mac = signed.rpartition(".")
     good = hmac.new(secret, value.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
-    return value if hmac.compare_digest(mac, good) else None
+    try:
+        return value if hmac.compare_digest(mac.encode("utf-8"), good.encode("utf-8")) else None
+    except (UnicodeError, TypeError):
+        return None

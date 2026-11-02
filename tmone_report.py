@@ -460,6 +460,9 @@ def write_utilization_workbook(path: Path, tenants_data: list[TenantData], month
         for td in tenants_data:
             build_tenant_sheet(td, config).to_excel(writer, sheet_name=str(td.cfg.get("sheet_name", td.key))[:31], index=False, header=False)
         format_utilization_workbook(writer.book, normalize_month(month), tenants_data, config)
+        from excel_format import neutralize_formulas
+
+        neutralize_formulas(writer.book)
 
 
 

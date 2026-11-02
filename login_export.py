@@ -145,6 +145,9 @@ def write_login_workbook(path: Path, tenants_data: list[Any], config: dict[str, 
         for sheet_name, df, td, license_key in sheets:
             df.to_excel(writer, sheet_name=sheet_name[:31], index=False)
         format_login_workbook(writer.book, month)
+        from excel_format import neutralize_formulas
+
+        neutralize_formulas(writer.book)
     return len(sheets)
 
 

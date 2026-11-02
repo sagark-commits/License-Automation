@@ -138,12 +138,18 @@ def cmd_serve(args) -> int:
     if args.cert and not args.key:
         print("ERROR: --cert needs --key")
         return 1
+    loopback = args.host in ("127.0.0.1", "localhost", "::1")
+    if args.trust_proxy and not loopback:
+        print("ERROR: --trust-proxy is only allowed with --host 127.0.0.1 (or ::1): the forwarded-for header is "
+              "trusted blindly, so only a proxy on this machine may reach the port.")
+        return 1
+    if not loopback and not args.cert and not args.trust_proxy and not args.insecure_http:
+        print("ERROR: refusing to listen on %s without TLS: passwords would cross the network in clear text.\n"
+              "  Use --cert/--key, or nginx with --trust-proxy on 127.0.0.1, or add --insecure-http to accept the risk." % args.host)
+        return 1
     app = create_app(data_dir, REPO, trust_proxy=args.trust_proxy, secure_cookies=bool(args.cert) or args.secure_cookies)
     if app.users.count() == 0:
         print("WARNING: no users exist - run:  python3.9 run_web.py init")
-    if args.host not in ("127.0.0.1", "localhost", "::1") and not args.cert and not args.trust_proxy:
-        print("NOTE: listening on %s without TLS. Passwords travel in clear text on this network; "
-              "use --cert/--key or an nginx reverse proxy (see deploy/)." % args.host)
     serve(app, args.host, args.port, args.cert, args.key)
     return 0
 
@@ -162,6 +168,7 @@ def main() -> int:
     p.add_argument("--key", help="TLS private key (PEM)")
     p.add_argument("--trust-proxy", action="store_true", help="trust X-Forwarded-For/-Proto from a reverse proxy")
     p.add_argument("--secure-cookies", action="store_true", help="mark cookies Secure (use when TLS is terminated by a proxy)")
+    p.add_argument("--insecure-http", action="store_true", help="allow a non-loopback listen address without TLS (not recommended)")
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(fn=cmd_serve)
     p = sub.add_parser("add-user", help="create a user")

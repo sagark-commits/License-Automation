@@ -57,6 +57,32 @@ Sign-ins, config changes, runs and downloads are in **Audit**. CLI: `run_web.py 
 * Or nginx in front: see `deploy/nginx-license-ui.conf` and `deploy/license-ui.service` (`--trust-proxy --secure-cookies`).
 * Without either, passwords cross the network in clear text - keep it on the internal network only.
 
+## Production safety (read before the first real run)
+
+The UI only reads from the database and writes into its own `data/` folder, but a report run does real work on a
+production database server. The first run's actual load has **not been measured** - treat the numbers below as starting
+points and check them once.
+
+* **Where to run it:** on a separate VM or at least a non-call server, not on a server that carries live calls.
+* **Dedicated read-only database role** (one per ARC), for example:
+  ```sql
+  CREATE ROLE licreport LOGIN PASSWORD '...' CONNECTION LIMIT 2;
+  GRANT SELECT ON user_session_history, users, campaign_user_working_history, campaign_context, contact_center TO licreport;
+  ALTER ROLE licreport SET statement_timeout = '120s';
+  ALTER ROLE licreport SET idle_in_transaction_session_timeout = '30s';
+  ```
+  Prefer a replica if one exists. In **Databases** set the query time limit to about 120 s (default 600 s).
+* **First full run:** do it off-peak and watch `top` on the UI server and `select * from pg_stat_activity` on the database.
+* **Limits built in:** at most 32 simultaneous connections, one report at a time (max 5 queued), a run is stopped after
+  30 minutes (admin can change it under Settings), no run starts with less than 500 MB free disk, logs are size-capped.
+* **Server files:** keep the code folder read-only for the service user (only `data/` is writable). `deploy/license-ui.service`
+  contains CPU/memory/IO limits and a sandbox; check them against one real run.
+* **Monitoring:** poll `GET /healthz` (returns `{"status":"ok"}`, or 503 if the worker thread died) from Zabbix.
+* **Rollback:** deploy into a new folder and keep the previous one as `<folder>.old`; to roll back stop the service,
+  swap the folders, start it. `data/` is shared and is never touched by an upgrade.
+* The server refuses to listen on a non-local address without TLS (`--cert/--key`, or nginx + `--trust-proxy` on 127.0.0.1)
+  unless you pass `--insecure-http`.
+
 ## Backup, upgrade, rollback
 
 * Back up `data/` (tenants, users, DB settings, past reports). Every tenant-registry save keeps a copy in

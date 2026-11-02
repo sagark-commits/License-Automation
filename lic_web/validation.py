@@ -29,9 +29,21 @@ def parse_lines(text: Any) -> List[str]:
     return out
 
 
+FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+
+
+def check_text_lead(value: str, what: str) -> Optional[str]:
+    """Spreadsheet formula injection: text that starts with = + - @ would run as a formula in Excel."""
+    if value and value.lstrip(" ")[:1] in FORMULA_LEAD:
+        return "%s must not start with = + - or @." % what
+    return None
+
+
 def check_sheet_name(name: str, what: str) -> Optional[str]:
     if not name or not name.strip():
         return "%s: sheet name is empty" % what
+    if check_text_lead(name, what):
+        return "%s: sheet name must not start with = + - or @" % what
     if len(name) > MAX_SHEET_LEN:
         return "%s: sheet name '%s' is longer than %d characters" % (what, name, MAX_SHEET_LEN)
     if BAD_SHEET_CHARS.search(name):
@@ -78,6 +90,8 @@ def validate_tenant(
         errors.append("Project name is required.")
     elif len(project) > 80:
         errors.append("Project name is longer than 80 characters.")
+    elif check_text_lead(project, "Project name"):
+        errors.append(check_text_lead(project, "Project name"))
 
     sheet = str(cfg.get("sheet_name", "")).strip()
     msg = check_sheet_name(sheet, "Tenant sheet")
@@ -118,6 +132,8 @@ def validate_tenant(
     label = cfg.get("agent_display_label")
     if label and len(str(label)) > 40:
         errors.append("Agent display label is longer than 40 characters.")
+    elif label and check_text_lead(str(label), "Agent display label"):
+        errors.append(check_text_lead(str(label), "Agent display label"))
 
     if cfg.get("supervisors_without_campaign") and campaigns:
         errors.append("'Count supervisors without a campaign' cannot be used together with campaign ids: "
