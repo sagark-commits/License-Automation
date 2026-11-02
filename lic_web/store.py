@@ -184,7 +184,7 @@ class DataDir:
 
     def db_configured(self) -> bool:
         view = self.db_view()
-        return bool(view) and all(v["host"] and v["user"] and v["has_password"] for v in view.values())
+        return bool(view) and all(v["host"] and v["user"] for v in view.values())
 
     def save_db(self, arc: str, settings: Dict[str, Any], actor: str) -> None:
         """Update one ARC. A blank password keeps the stored one."""

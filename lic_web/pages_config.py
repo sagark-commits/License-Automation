@@ -408,7 +408,7 @@ class ConfigPages:
         cards = ""
         for arc in self.data.arcs():
             v = view.get(arc, {"host": "", "port": 5432, "name": "oneproduct", "user": "", "has_password": False, "sslmode": "", "statement_timeout_ms": 600000})
-            ready = v["host"] and v["user"] and v["has_password"]
+            ready = v["host"] and v["user"]
             cards += ('<div class="card"><div class="row"><h2>%s</h2> %s</div><form method="post" action="/settings/db">%s<input type="hidden" name="arc" value="%s">'
                       '<div class="row">%s%s%s</div><div class="row">%s%s%s%s</div>'
                       '<div class="row"><button type="submit">Save %s</button> <button type="button" class="sec" data-test-arc="%s">Test saved connection</button> <span class="small" data-test-out="%s"></span></div></form></div>') % (
