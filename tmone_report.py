@@ -462,6 +462,9 @@ def write_utilization_workbook(path: Path, tenants_data: list[TenantData], month
         format_utilization_workbook(writer.book, normalize_month(month), tenants_data, config)
         from excel_format import neutralize_formulas
 
+        from excel_format import polish_utilization
+
+        polish_utilization(writer.book)
         neutralize_formulas(writer.book)
 
 
