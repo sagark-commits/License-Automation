@@ -10,6 +10,8 @@ from typing import Any
 from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.series import DataPoint
+from openpyxl.formatting.rule import ColorScaleRule
+from openpyxl.worksheet.properties import PageSetupProperties
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
@@ -18,6 +20,7 @@ HEADER_FONT = Font(name="Calibri", bold=True, color="FFFFFF", size=11)
 SUBHEADER_FILL = PatternFill("solid", fgColor="2E75B6")
 SUBHEADER_FONT = Font(name="Calibri", bold=True, color="FFFFFF", size=9)
 BANNER_FILL = PatternFill("solid", fgColor="1F4E79")
+DAILY_COL = 20      # Dashboard: column T holds the daily-total table (right of the charts)
 BANNER_FONT = Font(name="Calibri", bold=True, size=16, color="FFFFFF")
 SUBTITLE_FONT = Font(name="Calibri", size=10, color="D6E4F0")
 TITLE_FONT = Font(name="Calibri", bold=True, size=14, color="1F4E79")
@@ -231,27 +234,41 @@ def _tenant_peak_hour_row(ws, detail_header_row: int, max_row: int, max_col: int
   return best_row
 
 
-def _add_hourly_line_chart(ws, detail_header_row: int, data_row: int, max_col: int) -> None:
+def _add_hourly_line_chart(ws, detail_header_row: int, data_row: int, max_col: int, series_name: str = "Peak day") -> None:
+    """Hourly profile of the agent peak day, in the free area at the top-right of the sheet.
+
+    The chart reads a small 1..24 helper row just above the table header (short axis labels),
+    and sits in the frozen top block so it never covers the data table.
+    """
     if data_row is None or max_col < 27:
         return
+    from openpyxl.chart.series import SeriesLabel
+
+    hour_row = detail_header_row - 1
+    for i, col in enumerate(range(4, 28), start=1):
+        _set(ws, hour_row, col, value=i, font=Font(name="Calibri", size=8, color="808080"),
+             alignment=Alignment(horizontal="center"))
     chart = LineChart()
-    chart.title = "Hourly license profile (peak day)"
+    chart.title = "Hourly license profile - peak day"
     chart.style = 10
-    chart.y_axis.title = "Concurrent logins"
-    chart.x_axis.title = "Hour of day"
-    chart.height = 8
-    chart.width = 16
-    values = Reference(ws, min_col=4, min_row=data_row, max_col=max_col, max_row=data_row)
+    chart.legend = None
+    chart.height = 5.6
+    chart.width = 24
+    chart.x_axis.delete = False
+    chart.y_axis.delete = False
+    chart.y_axis.scaling.min = 0
+    chart.x_axis.title = "Hour of day (1 = 00:00-01:00)"
+    chart.y_axis.title = "Users"
+    values = Reference(ws, min_col=4, min_row=data_row, max_col=27, max_row=data_row)
     chart.add_data(values, from_rows=True, titles_from_data=False)
-    cats = Reference(ws, min_col=4, min_row=detail_header_row, max_col=max_col, max_row=detail_header_row)
-    chart.set_categories(cats)
-    chart.series[0].graphicalProperties.line.solidFill = "2E75B6"
-    chart.series[0].graphicalProperties.line.width = 22000
-    chart.series[0].marker.symbol = "circle"
-    chart.series[0].marker.size = 5
-    ws.add_chart(chart, f"A{data_row + 3}")
-
-
+    chart.set_categories(Reference(ws, min_col=4, min_row=hour_row, max_col=27, max_row=hour_row))
+    ser = chart.series[0]
+    ser.tx = SeriesLabel(v=series_name)
+    ser.graphicalProperties.line.solidFill = "2E75B6"
+    ser.graphicalProperties.line.width = 22000
+    ser.marker.symbol = "circle"
+    ser.marker.size = 5
+    ws.add_chart(chart, "E1")
 
 
 def _normalize_date(value: Any) -> date | None:
@@ -293,7 +310,7 @@ def format_tenant_sheet(ws, tenant_data: Any = None, config: dict[str, Any] | No
         ws.insert_rows(1, 2)
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=min(max_col, 10))
         _set(ws, 1, 1, value=title, font=TITLE_FONT, alignment=Alignment(horizontal="left", vertical="center"))
-        _set(ws, 2, 1, value=f"{arc}  |  Peak-day hourly breakdown", font=SUBTITLE_FONT)
+        _set(ws, 2, 1, value=f"{arc}  |  Peak-day hourly breakdown", font=Font(name="Calibri", size=10, color="595959"))
         if peak_header_row:
             peak_header_row += 2
         if detail_header_row:
@@ -322,6 +339,8 @@ def format_tenant_sheet(ws, tenant_data: Any = None, config: dict[str, Any] | No
         agent_peak_date = agent_peak.peak_date if agent_peak else None
 
         alt = False
+        agent_row = None
+        fallback_row = None
         for row in range(detail_header_row + 1, max_row + 1):
             if _is_blank_row(ws, row, max_col):
                 continue
@@ -340,18 +359,19 @@ def format_tenant_sheet(ws, tenant_data: Any = None, config: dict[str, Any] | No
                 cell.alignment = Alignment(horizontal="center", vertical="center")
 
             ws.row_dimensions[row].height = 18
+            if agent_peak and agent_peak_date and row_date == agent_peak_date and str(ws.cell(row, 2).value) == str(agent_peak.license_label):
+                agent_row = row
             if is_peak_day:
-                if agent_peak_date and row_date == agent_peak_date:
-                    peak_data_row = row
-                elif peak_data_row is None:
-                    peak_data_row = row
                 count_val = ws.cell(row, 3).value
-                if isinstance(count_val, (int, float)):
-                    if peak_data_row is None or int(count_val) > int(ws.cell(peak_data_row, 3).value or 0):
-                        peak_data_row = row
+                if isinstance(count_val, (int, float)) and (fallback_row is None or int(count_val) > int(ws.cell(fallback_row, 3).value or 0)):
+                    fallback_row = row
 
+        peak_data_row = agent_row or fallback_row
         if peak_data_row:
-            _add_hourly_line_chart(ws, detail_header_row, peak_data_row, max_col)
+            for r_ in range(1, detail_header_row - 1):          # room for the chart in the frozen top block
+                ws.row_dimensions[r_].height = 26 if r_ == 1 else (18 if r_ == 2 else 22)
+            name = "%s on %s" % (agent_peak.license_label, agent_peak_date.strftime("%d-%b-%Y")) if agent_peak and agent_peak_date else "Peak day"
+            _add_hourly_line_chart(ws, detail_header_row, peak_data_row, max_col, name)
 
     ws.column_dimensions["A"].width = 12
     ws.column_dimensions["B"].width = 18
@@ -443,16 +463,23 @@ def add_dashboard_sheet(wb, tenants_data: list[Any], month: str, config: dict[st
             if fill:
                 ws.cell(i, j).fill = fill
 
+    chart_left = "G"
+    bar_rows_cm = 0.0
     if dash_rows:
         bar = BarChart()
         bar.type = "bar"
-        bar.title = "Top tenants — agent peak licenses"
+        bar.title = "Agent peak licenses by tenant"
         bar.style = 10
-        bar.y_axis.title = "Tenant"
-        bar.x_axis.title = "Peak concurrent agents"
-        bar.height = 12
+        bar.legend = None
+        bar.x_axis.title = "Tenant"
+        bar.y_axis.title = "Peak concurrent agents"
+        bar.x_axis.delete = False
+        bar.y_axis.delete = False
+        bar.x_axis.scaling.orientation = "maxMin"          # biggest tenant on top
+        chart_count = min(30, len([r for r in dash_rows if r["agent_peak"] > 0]) or len(dash_rows))
+        bar.height = max(8.0, min(22.0, 0.55 * chart_count + 3))
         bar.width = 18
-        chart_count = min(15, len([r for r in dash_rows if r["agent_peak"] > 0]) or len(dash_rows))
+        bar_rows_cm = bar.height
         data = Reference(ws, min_col=3, min_row=table_row, max_row=table_row + chart_count)
         cats = Reference(ws, min_col=1, min_row=table_row + 1, max_row=table_row + chart_count)
         bar.add_data(data, titles_from_data=True)
@@ -462,25 +489,27 @@ def add_dashboard_sheet(wb, tenants_data: list[Any], month: str, config: dict[st
             bar.series[0].graphicalProperties.solidFill = "2E75B6"
             bar.series[0].dLbls = DataLabelList()
             bar.series[0].dLbls.showVal = True
-        ws.add_chart(bar, "G8")
+        ws.add_chart(bar, "%s%d" % (chart_left, table_row))
 
     daily = _daily_agent_totals(tenants_data)
     if daily:
-        start_col = 17
+        start_col = DAILY_COL                              # beyond the charts, so nothing sits on top of the table
         _set(ws, table_row, start_col, value="Date", fill=HEADER_FILL, font=HEADER_FONT, border=BORDER)
         _set(ws, table_row, start_col + 1, value="Total agents", fill=HEADER_FILL, font=HEADER_FONT, border=BORDER)
         for i, (d, total) in enumerate(daily, start=table_row + 1):
-            _set(ws, i, start_col, value=d, font=DATA_FONT, border=BORDER,
-                 alignment=Alignment(horizontal="center"))
-            _set(ws, i, start_col + 1, value=total, font=DATA_FONT, border=BORDER,
-                 alignment=Alignment(horizontal="center"))
+            _set(ws, i, start_col, value=d, font=DATA_FONT, border=BORDER, alignment=Alignment(horizontal="center"))
+            _set(ws, i, start_col + 1, value=total, font=DATA_FONT, border=BORDER, alignment=Alignment(horizontal="center"))
 
         line = LineChart()
         line.title = "Daily agent total (all tenants)"
         line.style = 12
+        line.legend = None
         line.y_axis.title = "Licenses"
         line.x_axis.title = "Day"
-        line.height = 12
+        line.x_axis.delete = False
+        line.y_axis.delete = False
+        line.y_axis.scaling.min = 0
+        line.height = 9
         line.width = 18
         values = Reference(ws, min_col=start_col + 1, min_row=table_row, max_row=table_row + len(daily))
         cats = Reference(ws, min_col=start_col, min_row=table_row + 1, max_row=table_row + len(daily))
@@ -490,7 +519,10 @@ def add_dashboard_sheet(wb, tenants_data: list[Any], month: str, config: dict[st
             line.series[0].graphicalProperties.line.solidFill = "1F4E79"
             line.series[0].graphicalProperties.line.width = 25000
             line.series[0].marker.symbol = "circle"
-        ws.add_chart(line, "G24")
+        below = table_row + int(bar_rows_cm / 0.53) + 3   # default row = 0.53 cm: start under the bar chart
+        ws.add_chart(line, "%s%d" % (chart_left, below))
+        ws.column_dimensions[get_column_letter(start_col)].width = 12
+        ws.column_dimensions[get_column_letter(start_col + 1)].width = 14
 
     ws.column_dimensions["A"].width = 24
     ws.column_dimensions["B"].width = 10
@@ -562,3 +594,116 @@ def format_login_workbook(wb, month: str) -> None:
         ws.column_dimensions["B"].width = 24
         ws.column_dimensions["C"].width = 24
         ws.column_dimensions["D"].width = 16
+
+
+# ---------------------------------------------------------------------------------------------
+# Presentation layer: purely visual (no cell value is changed). Only features Google Sheets and
+# Excel both support: colour scales, tab colours, number formats, widths, print setup.
+# ---------------------------------------------------------------------------------------------
+TAB_COLORS = {"dashboard": "1F4E79", "summary": "7030A0", "ARC-1": "2E75B6", "ARC-2": "548235",
+              "agent": "2E75B6", "supervisor": "ED7D31", "wallboard": "7F7F7F"}
+ZERO_DOT = '0;-0;"\u00b7"'          # zero shows as a light dot instead of 0 (less noise in big grids)
+
+
+def _page(ws, landscape: bool = True) -> None:
+    ws.sheet_view.showGridLines = False
+    ws.sheet_view.zoomScale = 90
+    ws.page_setup.orientation = "landscape" if landscape else "portrait"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr = PageSetupProperties(fitToPage=True)
+
+
+def _heat(ws, ref: str, high: str = "5B9BD5") -> None:
+    ws.conditional_formatting.add(ref, ColorScaleRule(start_type="num", start_value=0, start_color="FFFFFF", end_type="max", end_color=high))
+
+
+def _polish_dashboard(ws) -> None:
+    ws.sheet_properties.tabColor = TAB_COLORS["dashboard"]
+    hdr = next((r for r in range(1, 15) if ws.cell(r, 1).value == "Tenant"), None)
+    if not hdr:
+        return
+    last = hdr
+    while ws.cell(last + 1, 1).value not in (None, ""):
+        last += 1
+    for r in range(hdr + 1, last + 1):
+        arc = str(ws.cell(r, 2).value or "")
+        ws.cell(r, 2).fill = PatternFill("solid", fgColor="DDEBF7" if arc == "ARC-1" else "E2F0D9")
+        ws.cell(r, 3).number_format = ZERO_DOT
+        ws.cell(r, 5).number_format = ZERO_DOT
+        ws.cell(r, 4).number_format = "dd-mmm"
+        for c in (3, 4, 5):
+            ws.cell(r, c).alignment = Alignment(horizontal="center", vertical="center")
+    if last > hdr:
+        _heat(ws, "C%d:C%d" % (hdr + 1, last), "5B9BD5")
+        _heat(ws, "E%d:E%d" % (hdr + 1, last), "F4B183")
+    for col, w in (("A", 30), ("B", 9), ("C", 13), ("D", 13), ("E", 17)):
+        ws.column_dimensions[col].width = w
+    _page(ws)
+
+
+def _polish_summary(ws) -> None:
+    ws.sheet_properties.tabColor = TAB_COLORS["summary"]
+    hdr = next((r for r in range(1, 10) if ws.cell(r, 2).value == "License Type"), None)
+    if not hdr:
+        return
+    max_col = ws.max_column
+    for r in range(hdr + 2, ws.max_row + 1):
+        if isinstance(ws.cell(r, 3).value, (int, float)) and ws.cell(r, 2).value:
+            for c in range(3, max_col + 1):
+                ws.cell(r, c).number_format = ZERO_DOT
+                ws.cell(r, c).alignment = Alignment(horizontal="center", vertical="center")
+            _heat(ws, "D%d:%s%d" % (r, get_column_letter(max_col), r), "5B9BD5")
+    ws.column_dimensions["B"].width = max(ws.column_dimensions["B"].width or 0, 20)
+    if not ws.freeze_panes:
+        ws.freeze_panes = ws.cell(hdr + 2, 4).coordinate
+    _page(ws)
+
+
+def _polish_tenant(ws) -> None:
+    arc = str(ws.cell(2, 1).value or "")[:5]
+    ws.sheet_properties.tabColor = TAB_COLORS.get(arc, "2E75B6")
+    hdr = next((r for r in range(1, 30) if ws.cell(r, 1).value == "Date" and ws.cell(r, 3).value == "Max count"), None)
+    if not hdr:
+        _page(ws)
+        return
+    last = ws.max_row
+    for r in range(4, last + 1):
+        v = ws.cell(r, 1).value
+        if isinstance(v, (date, datetime)):
+            ws.cell(r, 1).number_format = "dd-mmm-yyyy (ddd)"
+        if r > hdr and isinstance(ws.cell(r, 3).value, (int, float)):
+            for c in range(3, 28):
+                ws.cell(r, c).number_format = ZERO_DOT
+    if last > hdr:
+        _heat(ws, "D%d:AA%d" % (hdr + 1, last), "5B9BD5")
+    ws.column_dimensions["A"].width = 19
+    _page(ws)
+
+
+def polish_utilization(wb) -> None:
+    for ws in wb.worksheets:
+        if ws.title == "Dashboard":
+            _polish_dashboard(ws)
+        elif ws.title == "Summary":
+            _polish_summary(ws)
+        else:
+            _polish_tenant(ws)
+
+
+def polish_login(wb) -> None:
+    for ws in wb.worksheets:
+        low = ws.title.lower()
+        key = "supervisor" if ("sup" in low) else ("wallboard" if "wall" in low else "agent")
+        ws.sheet_properties.tabColor = TAB_COLORS[key]
+        for r in range(2, ws.max_row + 1):
+            for c in (2, 3):
+                if isinstance(ws.cell(r, c).value, datetime):
+                    ws.cell(r, c).number_format = "dd-mmm-yyyy hh:mm:ss"
+            ws.cell(r, 4).alignment = Alignment(horizontal="right", vertical="center")
+        ws.column_dimensions["B"].width = 23
+        ws.column_dimensions["C"].width = 23
+        ws.column_dimensions["D"].width = 16
+        if ws.max_row > 1:
+            ws.auto_filter.ref = "A1:D%d" % ws.max_row
+        _page(ws, landscape=False)

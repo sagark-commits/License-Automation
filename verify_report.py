@@ -134,14 +134,12 @@ def _parse_dashboard(rows: Dict[int, Dict[int, Any]]) -> Dict[str, Any]:
         while r in rows and rows[r].get(1):
             row = rows[r]
             out["rows"][str(row[1])] = {"arc": row.get(2), "agent": row.get(3), "date": _to_date(row.get(4)), "sup": row.get(5)}
-            if _to_date(row.get(17)) and _is_num(row.get(18)):
-                out["daily"][_to_date(row[17])] = int(row[18])
             r += 1
-        while r in rows:      # the daily-total table can be longer than the tenant table
-            row = rows[r]
-            if _to_date(row.get(17)) and _is_num(row.get(18)):
-                out["daily"][_to_date(row[17])] = int(row[18])
-            r += 1
+        tot = next((c for c, v in rows[hdr].items() if v == "Total agents"), None)   # column moved over time: find it
+        if tot:
+            for rr in sorted(rows):
+                if rr > hdr and _to_date(rows[rr].get(tot - 1)) and _is_num(rows[rr].get(tot)):
+                    out["daily"][_to_date(rows[rr][tot - 1])] = int(rows[rr][tot])
     return out
 
 

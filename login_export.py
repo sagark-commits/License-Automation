@@ -147,6 +147,9 @@ def write_login_workbook(path: Path, tenants_data: list[Any], config: dict[str, 
         format_login_workbook(writer.book, month)
         from excel_format import neutralize_formulas
 
+        from excel_format import polish_login
+
+        polish_login(writer.book)
         neutralize_formulas(writer.book)
     return len(sheets)
 
