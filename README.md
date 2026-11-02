@@ -17,6 +17,15 @@ python3.9 run_monthly_from_db.py -m 2026-07
 - `output/Tmone license-Utilaztion_YYYY_MM.xlsx` - Dashboard + Summary + tenant sheets
 - `output/Tmone--Login Count Tmone_Mon_YY.xlsx` - peak-hour login sessions
 
+## Web UI (no scripts needed)
+
+```bash
+python3.9 run_web.py init --admin <name>
+python3.9 run_web.py serve --host 0.0.0.0 --port 8088
+```
+
+Generate reports, add tenants, change the Ameyo agent/supervisor/wallboard user types and check the result from a browser - see [HOWTO_WEB_UI.md](HOWTO_WEB_UI.md). `verify_report.py` cross-checks any pair of workbooks.
+
 ## Documentation
 
 | Doc | Purpose |

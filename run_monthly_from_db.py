@@ -2,6 +2,7 @@
 """One-command monthly TMONE reports from BOTH ARC databases."""
 from __future__ import annotations
 import argparse
+import logging
 import sys
 import warnings
 from datetime import datetime
@@ -47,6 +48,7 @@ def _print_connection_plan(script_dir, arc_filter):
         print("  %s: %s / %s" % (arc, login.get("host", "?"), login.get("name", "oneproduct")))
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = parse_args()
     script_dir = Path(__file__).resolve().parent
     try:

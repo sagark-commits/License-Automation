@@ -1,4 +1,4 @@
-﻿# TMONE License Utilization - tenant registry
+# TMONE License Utilization - tenant registry
 # arc: ARC-1 = Ameyo VPC  |  ARC-2 = Ameyo BPO
 
 defaults:
@@ -15,7 +15,13 @@ defaults:
   #   Per tenant you can override with:
   #     agent_display_label: "Ameyo Pro-Dialer"
   #     display_labels: { agent: "...", supervisor: "...", wallboard: "..." }
-  #     agent_user_types: [Professional-Agent, Executive]   # optional per-tenant list
+  #     agent_user_types: [Professional-Agent, Executive]   # optional per-tenant list (REPLACES defaults)
+  #     supervisor_user_types / wallboard_user_types        # same, for the other buckets
+  #     wallboard_user_id: wallboard_mbsp                   # exact wallboard login (else user_id pattern)
+  #     wallboard_user_pattern: "%wallboard%"               # ILIKE pattern for wallboard logins
+  #     supervisors_without_campaign: true                  # count supervisors with no campaign row
+  #                                                         # (only for a tenant with NO campaign_ids)
+  #     enabled: false                                      # exclude from runs (default true)
   # ---------------------------------------------------------------------------
   agent_user_types:
     - Professional-Agent
@@ -30,6 +36,9 @@ defaults:
   wallboard_filename_patterns:
     - wallboard
     - Wallboard
+  # user_type values that are never licensed and must not trigger "unclassified" warnings
+  ignored_user_types:
+    - Administrator
   license_labels:
     agent: Professional-Agent
     supervisor: Supervisor
@@ -135,6 +144,7 @@ tenants:
     folder_patterns: ["MBSA ARC 1"]
     login_sheets:
       agent: "MBSA Ameyo-express"
+      supervisor: "MBSA Supervisor"
 
   # --- ARC-1 (Ameyo VPC) ---
   MBSP:
@@ -276,6 +286,7 @@ tenants:
     folder_patterns: ["KPWKM ARC 1"]
     login_sheets:
       agent: KPMW_Ameyo-Express
+      supervisor: KPMW_Supervisor
 
   GAMUDA:
     arc: ARC-1
@@ -286,6 +297,7 @@ tenants:
     folder_patterns: ["GAMUDA ARC 1"]
     login_sheets:
       agent: Ameyo-Express_Gamuda
+      supervisor: Supervisor_Gamuda
 
   UNI5G:
     arc: ARC-1

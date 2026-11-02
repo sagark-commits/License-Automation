@@ -11,11 +11,11 @@ except ImportError:
 LOGIN_DB_DEFAULT = "oneproduct"
 USAGE_DB_DEFAULT = "reportsdb"
 
-def load_db_config(script_dir: Path) -> dict[str, Any]:
-    path = script_dir / "db_config.yaml"
+def load_db_config(script_dir: Path, path: Path | None = None) -> dict[str, Any]:
+    path = Path(path) if path else script_dir / "db_config.yaml"
     if not path.exists():
         return {"enabled": False, "database": {}, "login_database": {}, "usage_database": {}, "arc_databases": {}}
-    with path.open(encoding="utf-8") as fh:
+    with path.open(encoding="utf-8-sig") as fh:
         data = yaml.safe_load(fh) or {}
     return {
         "enabled": bool(data.get("enabled", False)),
@@ -55,11 +55,30 @@ def resolve_db_settings(args: argparse.Namespace, script_dir: Path) -> tuple[boo
     return verify, login_db
 
 def connect_database(settings: dict[str, Any]):
+    """Open a READ-ONLY, autocommit connection (reports never write; one failed query cannot
+    poison the connection for the tenants that follow)."""
     if psycopg2 is None:
         raise RuntimeError("psycopg2 required")
     if not settings.get("name") or not settings.get("user"):
         raise RuntimeError("database name and user required in db_config.yaml")
-    return psycopg2.connect(host=settings["host"], port=settings["port"], dbname=settings["name"], user=settings["user"], password=settings.get("password", ""), connect_timeout=15)
+    kwargs: dict[str, Any] = dict(
+        host=settings["host"],
+        port=settings["port"],
+        dbname=settings["name"],
+        user=settings["user"],
+        password=settings.get("password", ""),
+        connect_timeout=int(settings.get("connect_timeout", 15)),
+        application_name="license-utilization",
+        options="-c statement_timeout=%d" % int(settings.get("statement_timeout_ms", 600000)),
+    )
+    if settings.get("sslmode"):
+        kwargs["sslmode"] = settings["sslmode"]
+    conn = psycopg2.connect(**kwargs)
+    try:
+        conn.set_session(readonly=True, autocommit=True)
+    except Exception:
+        conn.autocommit = True
+    return conn
 
 def _login_and_usage_settings(file_cfg: dict[str, Any], args: argparse.Namespace):
     shared = _merge_db_settings(file_cfg.get("database", {}), {})
@@ -73,17 +92,31 @@ def _login_and_usage_settings(file_cfg: dict[str, Any], args: argparse.Namespace
     if getattr(args, "usage_db_name", None): usage_db["name"] = args.usage_db_name
     return login_db, usage_db
 
-def connect_login_databases(args: argparse.Namespace, script_dir: Path) -> dict[str, dict[str, Any]]:
-    """Connect only to oneproduct (peak dates + login sessions). No reportsdb required."""
-    file_cfg = load_db_config(script_dir)
+def connect_login_databases(
+    args: argparse.Namespace,
+    script_dir: Path,
+    db_config_path: Path | None = None,
+    only_arcs: list[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Connect only to oneproduct (peak dates + login sessions). No reportsdb required.
+
+    ``only_arcs`` limits the connections to the ARCs a run actually needs.
+    """
+    file_cfg = load_db_config(script_dir, db_config_path)
     login_base, _ = _login_and_usage_settings(file_cfg, args)
     arc_settings = file_cfg.get("arc_databases") or {}
     login_conns: dict[str, Any] = {}
     if arc_settings:
         for arc, pools in arc_settings.items():
+            if only_arcs is not None and arc not in only_arcs:
+                continue
             pools = pools or {}
             login_cfg = pools.get("login", pools)
-            login_conns[arc] = connect_database(_merge_db_settings(login_base, login_cfg))
+            try:
+                login_conns[arc] = connect_database(_merge_db_settings(login_base, login_cfg))
+            except Exception:
+                close_connections(login_conns)
+                raise
     else:
         login_conns["default"] = connect_database(login_base)
     return {"login": login_conns, "usage": {}}

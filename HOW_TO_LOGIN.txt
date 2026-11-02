@@ -1,4 +1,4 @@
-﻿TMONE Login Count Report
+TMONE Login Count Report
 ========================
 
 Output format (same as April/May sample):

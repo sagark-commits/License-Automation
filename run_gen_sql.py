@@ -1,4 +1,4 @@
-﻿import yaml
+import yaml
 from pathlib import Path
 import sys
 sys.path.insert(0, r"C:\Users\sagar.k\Downloads\license-utilization-automation")

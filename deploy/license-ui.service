@@ -1,0 +1,21 @@
+# /etc/systemd/system/license-ui.service
+# Adjust User, WorkingDirectory and the python path to your install.
+[Unit]
+Description=TMONE licence utilization web UI
+After=network.target
+
+[Service]
+Type=simple
+User=licui
+WorkingDirectory=/opt/offline_bundle/license-utilization-automation
+Environment=LIC_DATA_DIR=/var/lib/license-ui
+# Behind nginx (TLS terminated there): bind to localhost and trust the proxy headers.
+ExecStart=/usr/bin/python3.9 run_web.py serve --host 127.0.0.1 --port 8088 --trust-proxy --secure-cookies
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
